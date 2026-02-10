@@ -82,6 +82,21 @@
 > To use it for DNS do it this way:\
 > `docker run -d --name=tor-haproxy -e PORT=53 --restart=always sureserver/tor-haproxy:latest`
 
+### Podman
+
+> All the same commands work with Podman by replacing `docker` with `podman`:\
+> `podman run -d --name=tor-haproxy --restart=always sureserver/tor-haproxy:latest`
+>
+> With host port published:\
+> `podman run -d --name=tor-haproxy -p 853:853 --restart=always sureserver/tor-haproxy:latest`
+>
+> With custom bridges:\
+> `podman run -d --name=tor-haproxy -e BRIDGE1="obfs4 IP:PORT FINGERPRINT cert=... iat-mode=0" -e BRIDGE2="obfs4 IP:PORT FINGERPRINT cert=... iat-mode=0" --restart=always sureserver/tor-haproxy:latest`
+>
+> To generate a systemd service for auto-start:\
+> `podman generate systemd --name tor-haproxy --new > ~/.config/systemd/user/tor-haproxy.service`\
+> `systemctl --user enable --now tor-haproxy.service`
+
 ## Differences from tor-socat
 
 | | tor-socat | tor-haproxy |
