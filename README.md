@@ -136,6 +136,6 @@ tor-haproxy is provided **"as is"** without any **warranty**. Use at your own ri
 
 ## License
 
-This project is licensed under the **GPLv3 license**.
+This project is licensed under the **MIT license**.
 
 See [LICENSE](LICENSE.md) for more information.
