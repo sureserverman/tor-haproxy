@@ -5,31 +5,7 @@ BRIDGE2="${BRIDGE2:-obfs4 107.4.186.44:8214 1B6CB332A1954FDF740DE75E8AFAEB41469D
 
 tor Bridge "$BRIDGE1" Bridge "$BRIDGE2" &
 
-# Generate haproxy configuration
-cat > /etc/haproxy/haproxy.cfg <<EOF
-global
-    log stdout format raw local0 info
-
-defaults
-    mode tcp
-    log global
-    option tcplog
-    timeout connect 10s
-    timeout client 60s
-    timeout server 60s
-    timeout check 10s
-    retries 3
-
-frontend dns_dot
-    bind *:${PORT}
-    default_backend dns_resolvers
-
-backend dns_resolvers
-    default-server inter 30s fall 3 rise 2
-    server primary 10.192.0.1:853 socks4 127.0.0.1:9050 check
-    server backup 1.1.1.1:853 socks4 127.0.0.1:9050 check backup
-    server fallback 9.9.9.9:853 socks4 127.0.0.1:9050 check backup
-EOF
+sed -i "s/LISTEN_PORT/${PORT}/" /etc/haproxy/haproxy.cfg
 
 # Wait for Tor to bootstrap
 sleep 10
