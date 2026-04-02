@@ -1,3 +1,5 @@
+DataDirectory /var/lib/tor
+User tor
 UseBridges 1
 
 ClientTransportPlugin obfs4 exec /usr/bin/lyrebird

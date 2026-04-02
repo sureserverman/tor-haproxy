@@ -7,7 +7,10 @@
       "WebFetch(domain:hub.docker.com)",
       "WebFetch(domain:docs.docker.com)",
       "WebFetch(domain:raw.githubusercontent.com)",
-      "Bash(docker pull:*)"
+      "Bash(docker pull:*)",
+      "Bash(gh run:*)",
+      "Bash(podman logs:*)",
+      "Bash(podman exec:*)"
     ]
   }
 }
