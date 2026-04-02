@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(nc:*)",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:hub.docker.com)",
+      "WebFetch(domain:docs.docker.com)",
+      "WebFetch(domain:raw.githubusercontent.com)"
+    ]
+  }
+}
