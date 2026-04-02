@@ -1,4 +1,4 @@
-FROM ghcr.io/ironpeakservices/iron-alpine/iron-alpine:3
+FROM ghcr.io/ironpeakservices/iron-alpine/iron-alpine:3.21.3
 
 RUN apk -U --no-cache upgrade \
     && apk add --no-cache tor haproxy bind-tools tini \
