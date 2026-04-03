@@ -84,4 +84,4 @@ Client --[DNS-over-TLS]--> haproxy --[SOCKS4]--> Tor ---> upstream DoT resolver
 
 ## License
 
-GPLv3
+MIT

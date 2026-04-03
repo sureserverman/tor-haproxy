@@ -7,9 +7,6 @@
 <div align="center">
   tor-haproxy
   <br />
-  <a href="#about"><strong>Explore the screenshots »</strong></a>
-  <br />
-  <br />
   <a href="https://github.com/sureserverman/tor-haproxy/issues/new?assignees=&labels=bug&template=01_BUG_REPORT.md&title=bug%3A+">Report a Bug</a>
   ·
   <a href="https://github.com/sureserverman/tor-haproxy/issues/new?assignees=&labels=enhancement&template=02_FEATURE_REQUEST.md&title=feat%3A+">Request a Feature</a>
@@ -102,11 +99,10 @@
 | | tor-socat | tor-haproxy |
 |---|---|---|
 | Local protocol | TLS passthrough | TLS passthrough (identical client behavior) |
-| Failover | Shell-based stderr parsing | haproxy health checks (`inter 30s fall 3 rise 2`) |
-| Retry on disconnect | Manual | haproxy retries with configurable count |
+| Failover | Shell-based health checks (`dig` probe every 30s) | haproxy health checks (`inter 30s fall 3 rise 2`) |
 | Tor routing | socat SOCKS4A | haproxy native `socks4` keyword |
 | .onion support | SOCKS4A hostname resolution | Tor `MapAddress` to virtual IP |
-| Health monitoring | None (reactive only) | Active TCP health checks every 30s |
+| Health monitoring | Active DNS health checks every 30s | Active TCP health checks every 30s |
 | Connection logging | socat debug output | haproxy tcplog |
 
 ## Roadmap
