@@ -32,7 +32,14 @@
       "Bash(break)",
       "Bash(podman stop:*)",
       "Bash(echo \"Exit: $?\")",
-      "Bash(podman events:*)"
+      "Bash(podman events:*)",
+      "Bash(timeout 10 bash -c 'echo | socat - TCP4:109.110.170.208:29323,connect-timeout=5')",
+      "Bash(timeout 10 bash -c 'echo | socat - TCP4:89.164.18.160:9005,connect-timeout=5')",
+      "Bash(timeout 5 bash -c 'cat < /dev/tcp/109.110.170.208/29323')",
+      "Bash(timeout 5 bash -c 'cat < /dev/tcp/89.164.18.160/9005')",
+      "Bash(timeout 5 bash -c 'echo > /dev/tcp/109.110.170.208/29323')",
+      "Bash(timeout 5 bash -c 'echo > /dev/tcp/89.164.18.160/9005')",
+      "Bash(timeout 10 bash -c 'echo > /dev/tcp/89.164.18.160/9005')"
     ]
   }
 }
