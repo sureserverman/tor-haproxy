@@ -31,7 +31,8 @@
       "Bash(podman start:*)",
       "Bash(break)",
       "Bash(podman stop:*)",
-      "Bash(echo \"Exit: $?\")"
+      "Bash(echo \"Exit: $?\")",
+      "Bash(podman events:*)"
     ]
   }
 }
