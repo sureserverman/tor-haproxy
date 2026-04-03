@@ -5,7 +5,7 @@ BRIDGE2="${BRIDGE2:-obfs4 37.27.122.122:8088 7F6051103D00F6E6615C5C8D92C4B648B32
 
 TOR_LOG=/var/log/tor.log
 
-tor Bridge "$BRIDGE1" Bridge "$BRIDGE2" | tee "$TOR_LOG" &
+tor Bridge "$BRIDGE1" Bridge "$BRIDGE2" 2>&1 | tee "$TOR_LOG" &
 
 sed -i "s/LISTEN_PORT/${PORT}/" /etc/haproxy/haproxy.cfg
 

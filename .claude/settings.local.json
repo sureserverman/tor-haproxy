@@ -17,7 +17,21 @@
       "Read(//usr/bin/**)",
       "Read(//usr/local/bin/**)",
       "WebFetch(domain:www.haproxy.org)",
-      "WebFetch(domain:git.haproxy.org)"
+      "WebFetch(domain:git.haproxy.org)",
+      "Bash(podman run:*)",
+      "Read(//tmp/**)",
+      "Bash(podman build:*)",
+      "Bash(podman rm:*)",
+      "Bash(dig +short:*)",
+      "Bash(podman ps:*)",
+      "Bash(podman inspect:*)",
+      "Bash(podman images:*)",
+      "Bash(podman rmi:*)",
+      "Bash(podman port:*)",
+      "Bash(podman start:*)",
+      "Bash(break)",
+      "Bash(podman stop:*)",
+      "Bash(echo \"Exit: $?\")"
     ]
   }
 }
