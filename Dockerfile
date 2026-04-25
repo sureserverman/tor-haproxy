@@ -13,12 +13,17 @@ ENV APP_DIR="/$APP_USER"
 ENV DATA_DIR="$APP_DIR/data"
 ENV CONF_DIR="$APP_DIR/conf"
 
+# Edge-community release pin for lyrebird; bump when alpine major version
+# changes. Override at build time with --build-arg LYREBIRD_VERSION=...
+ARG LYREBIRD_VERSION=0.8.1-r4
+
 RUN apk add --no-cache ca-certificates
 
-# App user and directories
+# App user and directories. tor's DataDirectory and haproxy's runtime state
+# both live under $DATA_DIR so they are writable by the unprivileged app user.
 RUN adduser -s /bin/true -u 1000 -D -h $APP_DIR $APP_USER \
-    && mkdir "$DATA_DIR" "$CONF_DIR" \
-    && chown -R "$APP_USER" "$APP_DIR" "$CONF_DIR" \
+    && mkdir "$DATA_DIR" "$CONF_DIR" "$DATA_DIR/tor" \
+    && chown -R "$APP_USER" "$APP_DIR" "$CONF_DIR" "$DATA_DIR" \
     && chmod 700 "$APP_DIR" "$DATA_DIR" "$CONF_DIR"
 
 # Hardening (mirrors ironpeakservices/iron-alpine)
@@ -49,13 +54,16 @@ RUN chmod 500 $APP_DIR/post-install.sh
 WORKDIR $APP_DIR
 
 # --- Application layer ---
+# libcap is installed temporarily for setcap; removed before post-install runs.
 RUN apk -U --no-cache upgrade \
-    && apk add --no-cache tor haproxy bind-tools tini \
-    && apk add --no-cache lyrebird \
-        --repository=https://dl-cdn.alpinelinux.org/alpine/edge/community/
+    && apk add --no-cache tor haproxy bind-tools tini libcap \
+    && apk add --no-cache "lyrebird=${LYREBIRD_VERSION}" \
+        --repository=https://dl-cdn.alpinelinux.org/alpine/edge/community/ \
+    && setcap 'cap_net_bind_service=+ep' /usr/sbin/haproxy \
+    && apk del libcap
 
 COPY torrc /etc/tor/
-COPY haproxy.cfg /etc/haproxy/
+COPY haproxy.cfg.template /etc/haproxy/haproxy.cfg.template
 COPY start.sh /bin/
 
 ENV PORT=853
@@ -63,6 +71,11 @@ HEALTHCHECK CMD dig +short +tls +norecurse +retry=0 -p 853 @127.0.0.1 google.com
 
 # Remove apk and lock down app directory
 RUN $APP_DIR/post-install.sh
+
+# Run as unprivileged user. haproxy retains CAP_NET_BIND_SERVICE via file
+# capabilities so it can bind PORT=853 without UID 0. tor and lyrebird only
+# need outbound connections — no privileged ports.
+USER app
 
 ENTRYPOINT ["tini", "--"]
 CMD ["/bin/start.sh"]

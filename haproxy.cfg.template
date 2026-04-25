@@ -14,6 +14,12 @@ defaults
 
 frontend dns_dot
     bind *:LISTEN_PORT
+    # Per-source connection-rate limit. Cap any single client to 50 new
+    # connections per 10s window before rejecting.
+    stick-table type ip size 100k expire 60s store conn_rate(10s),conn_cur
+    tcp-request connection track-sc0 src
+    tcp-request connection reject if { sc0_conn_rate gt 50 }
+    tcp-request connection reject if { sc0_conn_cur gt 100 }
     default_backend dns_resolvers
 
 backend dns_resolvers

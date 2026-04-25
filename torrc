@@ -1,6 +1,9 @@
-DataDirectory /var/lib/tor
-User tor
+DataDirectory /app/data/tor
 UseBridges 1
+
+# SOCKS proxy: explicit loopback bind; HAProxy connects here for SOCKS4 routing.
+SocksPort 127.0.0.1:9050
+# No ControlPort — no authenticated management channel is exposed.
 
 ClientTransportPlugin obfs4 exec /usr/bin/lyrebird
 
