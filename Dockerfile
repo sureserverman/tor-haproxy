@@ -53,13 +53,16 @@ COPY --chown=app:app --chmod=500 post-install.sh $APP_DIR/
 WORKDIR $APP_DIR
 
 # --- Application layer ---
-# libcap is installed temporarily for setcap; removed before post-install runs.
+# libcap is installed as a named virtual package — `apk del .setcap-deps`
+# then removes libcap ONLY if no other installed package (e.g. tor) depends
+# on it. Plain `apk del libcap` would fail with reverse-dep rejection.
 RUN apk -U --no-cache upgrade \
-    && apk add --no-cache tor haproxy bind-tools tini libcap \
+    && apk add --no-cache tor haproxy bind-tools tini \
+    && apk add --no-cache --virtual .setcap-deps libcap \
     && apk add --no-cache "lyrebird=${LYREBIRD_VERSION}" \
         --repository=https://dl-cdn.alpinelinux.org/alpine/edge/community/ \
     && setcap 'cap_net_bind_service=+ep' /usr/sbin/haproxy \
-    && apk del libcap
+    && apk del .setcap-deps
 
 COPY --chown=root:root torrc /etc/tor/
 COPY --chown=root:root haproxy.cfg.template /etc/haproxy/haproxy.cfg.template
