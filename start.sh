@@ -3,6 +3,10 @@
 # shellcheck disable=SC3045  # wait -n is supported by busybox ash
 set -eu
 
+# Files we create (tor.log, rendered haproxy config) are owner-only —
+# tor circuit info and bridge parameters are visible in startup logs.
+umask 077
+
 # Bridges MUST be supplied by the operator at runtime — no defaults are
 # baked into the image. The previous defaults leaked real obfs4 fingerprints
 # and certificates into every published image layer.

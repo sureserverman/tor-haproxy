@@ -48,8 +48,7 @@ RUN rm -fr /var/spool/cron /etc/crontabs /etc/periodic \
     && rm -f /etc/fstab \
     && find /bin /etc /lib /sbin /usr -xdev -type l -exec test ! -e {} \; -delete
 
-COPY post-install.sh $APP_DIR/
-RUN chmod 500 $APP_DIR/post-install.sh
+COPY --chown=app:app --chmod=500 post-install.sh $APP_DIR/
 
 WORKDIR $APP_DIR
 
@@ -62,9 +61,9 @@ RUN apk -U --no-cache upgrade \
     && setcap 'cap_net_bind_service=+ep' /usr/sbin/haproxy \
     && apk del libcap
 
-COPY torrc /etc/tor/
-COPY haproxy.cfg.template /etc/haproxy/haproxy.cfg.template
-COPY start.sh /bin/
+COPY --chown=root:root torrc /etc/tor/
+COPY --chown=root:root haproxy.cfg.template /etc/haproxy/haproxy.cfg.template
+COPY --chown=root:root --chmod=755 start.sh /bin/
 
 ENV PORT=853
 HEALTHCHECK CMD dig +short +tls +norecurse +retry=0 -p 853 @127.0.0.1 google.com || exit 1
