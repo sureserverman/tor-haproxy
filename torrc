@@ -1,10 +1,35 @@
 DataDirectory /app/data/tor
 UseBridges 1
 
+# Tor 0.4.8+ enables conflux by default for HS-client traffic. Conflux requires
+# two link-disjoint paths, which means ≥3 distinct guards. With exactly two
+# bridges, conflux can never form the second path → circuits die with
+# "Unlinked conflux circuit" / "Failed to find node for hop #1" and the proxy
+# never carries traffic. Since this image's primary upstream is the Cloudflare
+# DNS .onion, every DoT query rides a HS circuit, so conflux is fatal here.
+# Disable it to make 2-bridge configs work as designed.
+ConfluxEnabled 0
+
+# Match the bridge count so Tor doesn't keep one primary-guard slot
+# permanently empty and log "missing descriptors for 1/3 of our primary entry
+# guards" forever. Default NumPrimaryGuards is 3.
+NumPrimaryGuards 2
+
 # SOCKS proxy: explicit loopback bind; HAProxy connects here for SOCKS4 routing.
 SocksPort 127.0.0.1:9050
 # No ControlPort — no authenticated management channel is exposed.
 
 ClientTransportPlugin obfs4 exec /usr/bin/lyrebird
 
+# Cloudflare's hidden DNS resolver returns this RFC1918 sentinel IP when
+# clients query it; we MapAddress it back to the .onion before connecting.
+# The rewrite is purely client-side — nothing leaks to the network.
 MapAddress 10.192.0.1 dns4torpnlfs2ifuz2s2yf3fc7rdmsbhm6rw75euj35pac6ap25zgqad.onion
+
+# Tor 0.4.9+ rejects SOCKS connections to RFC1918 destinations BEFORE applying
+# MapAddress, so haproxy's `socks4 127.0.0.1:9050` target of 10.192.0.1:853 is
+# refused with "SOCKS4 Proxy deny the request" even though MapAddress would
+# rewrite it to the onion. Disable the early reject for the SOCKS path; the
+# only RFC1918 destination we ever connect to here is 10.192.0.1, which the
+# MapAddress above redirects to a .onion — nothing escapes the loopback.
+ClientRejectInternalAddresses 0
