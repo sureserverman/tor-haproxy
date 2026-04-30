@@ -11,34 +11,19 @@ umask 077
 # baked into the image. The previous defaults leaked real obfs4 fingerprints
 # and certificates into every published image layer.
 #
-# BRIDGE1 + BRIDGE2 are required. BRIDGE3..BRIDGE16 are optional extras:
-#   - With ≥3 bridges Tor 0.4.8+ can form Conflux paths for onion-service
-#     traffic (≥3 distinct primary guards required), roughly halving
-#     cold-query latency to the Cloudflare DoT .onion.
-#   - Bridges beyond NumPrimaryGuards (3) sit in Tor's guard sample set as
-#     warm fallbacks; if a primary obfs4 endpoint dies, Tor rotates a
-#     reserve in within seconds without re-bootstrapping the whole stack.
-# With only 2 bridges the torrc-baked ConfluxEnabled 0 / NumPrimaryGuards 2
-# stays in effect (legacy mode — slower but functional).
+# Exactly 3 bridges are required: that's the minimum for Tor 0.4.8+ Conflux
+# (≥3 distinct primary guards) on the onion-service traffic this image
+# carries, and the maximum that doesn't widen first-query latency variance
+# enough to push cold queries past typical client timeouts (8s+).
 : "${BRIDGE1:?BRIDGE1 must be set (e.g. -e BRIDGE1='obfs4 IP:PORT FPR cert=... iat-mode=0')}"
 : "${BRIDGE2:?BRIDGE2 must be set (e.g. -e BRIDGE2='obfs4 IP:PORT FPR cert=... iat-mode=0')}"
+: "${BRIDGE3:?BRIDGE3 must be set (e.g. -e BRIDGE3='obfs4 IP:PORT FPR cert=... iat-mode=0')}"
 
 # obfs4 line shape: 'obfs4 host:port 40-hex-fingerprint cert=<base64> iat-mode=[012]'
 bridge_re='^obfs4 [^[:space:]]+ [0-9A-Fa-f]{40} cert=[^[:space:]]+ iat-mode=[012]$'
-
-# Discover BRIDGE1..BRIDGE16 (stop at the first unset slot) and validate each.
-# bridge_count is used downstream to decide between Conflux mode (≥3) and
-# legacy 2-bridge mode.
-bridge_count=0
-i=1
-while [ "$i" -le 16 ]; do
-    eval "_v=\${BRIDGE${i}:-}"
-    [ -z "$_v" ] && break
-    echo "$_v" | grep -Eq "$bridge_re" \
-        || { echo "ERROR: BRIDGE$i has invalid obfs4 syntax" >&2; exit 1; }
-    bridge_count=$((bridge_count + 1))
-    i=$((i + 1))
-done
+echo "$BRIDGE1" | grep -Eq "$bridge_re" || { echo "ERROR: BRIDGE1 has invalid obfs4 syntax" >&2; exit 1; }
+echo "$BRIDGE2" | grep -Eq "$bridge_re" || { echo "ERROR: BRIDGE2 has invalid obfs4 syntax" >&2; exit 1; }
+echo "$BRIDGE3" | grep -Eq "$bridge_re" || { echo "ERROR: BRIDGE3 has invalid obfs4 syntax" >&2; exit 1; }
 
 # PORT must be a positive integer in the valid TCP range.
 case "${PORT:-}" in
@@ -63,24 +48,11 @@ cleanup() {
 }
 trap cleanup TERM INT
 
-# Build tor argv: each BRIDGE_i becomes a "Bridge $val" pair. With ≥3 bridges
-# we override the torrc-baked safe defaults (ConfluxEnabled 0 /
-# NumPrimaryGuards 2 — necessary for 2-bridge configs to function at all) so
-# Tor uses 3 primary guards, re-engages Conflux, and treats bridges 4+ as
-# warm reserves in its guard sample set.
-set --
-i=1
-while [ "$i" -le "$bridge_count" ]; do
-    eval "_v=\${BRIDGE${i}}"
-    set -- "$@" Bridge "$_v"
-    i=$((i + 1))
-done
-if [ "$bridge_count" -ge 3 ]; then
-    set -- "$@" NumPrimaryGuards 3 ConfluxEnabled 1
-fi
-
 # Background tor so we can wait for bootstrap before launching haproxy.
-tor "$@" >"$TOR_LOG" 2>&1 &
+# 3 bridges + Tor's defaults (NumPrimaryGuards 3, ConfluxEnabled 1) give the
+# 2-link-disjoint Conflux pair on every onion-service circuit.
+tor Bridge "$BRIDGE1" Bridge "$BRIDGE2" Bridge "$BRIDGE3" \
+    >"$TOR_LOG" 2>&1 &
 TOR_PID=$!
 
 echo "Waiting for Tor to bootstrap..."
