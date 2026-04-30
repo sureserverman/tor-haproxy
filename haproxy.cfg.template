@@ -5,7 +5,16 @@ defaults
     mode tcp
     log global
     option tcplog
-    timeout connect 10s
+    # 20s covers the slow path of a Tor .onion connect: HSDir lookup +
+    # introduce + rendezvous-circuit build + TLS to the hidden service.
+    # Previous 10s was the median for that sequence — health probes
+    # intermittently failed at exactly 10001ms, marking the .onion
+    # primary DOWN and quietly demoting traffic to the clearnet backup
+    # (1.1.1.1 via Tor exit), which still works but defeats the
+    # "queries never leave the machine in plaintext to a known DNS
+    # resolver IP" property the project advertises. Clearnet exit
+    # connects (~600ms) are unaffected.
+    timeout connect 20s
     timeout client 60s
     timeout server 60s
     timeout check 30s
@@ -24,6 +33,15 @@ frontend dns_dot
 
 backend dns_resolvers
     default-server inter 30s fall 3 rise 2
+    # Note: ideal cold-start design would mark primary as `init-state down`
+    # so traffic flows through `backup` (~600ms clearnet via Tor exit)
+    # while the .onion path warms up, then auto-promotes to primary once
+    # health checks pass. That keyword exists in haproxy ≥ 3.1 but the
+    # alpine image here ships 3.0.20 — keyword is not recognized.
+    # Until the base image bumps haproxy to 3.1+, primary starts UP by
+    # default and the first 5-15s of queries crawl through a half-warm
+    # .onion rendezvous. `timeout connect 20s` covers the legitimate
+    # cold-start window so primary at least doesn't get marked DOWN.
     server primary 10.192.0.1:853 socks4 127.0.0.1:9050 check check-via-socks4
     server backup 1.1.1.1:853 socks4 127.0.0.1:9050 check check-via-socks4 backup
     server fallback 9.9.9.9:853 socks4 127.0.0.1:9050 check check-via-socks4 backup
