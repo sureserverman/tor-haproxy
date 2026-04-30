@@ -1,4 +1,10 @@
-FROM alpine:3.21.3
+# alpine 3.22 ships haproxy 3.2.16 (3.21 had 3.0.20). 3.1+ is needed for the
+# `init-state down` server keyword used in haproxy.cfg.template — it lets the
+# .onion primary start in DOWN state and promote to UP only after its first
+# health check succeeds, so the clearnet `backup` serves immediately at
+# cold-start instead of the user waiting ~20s for the primary's first
+# rendezvous build.
+FROM alpine:3.22.4
 
 LABEL org.opencontainers.image.source="https://github.com/sureserverman/tor-haproxy"
 
