@@ -84,6 +84,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      id-token: write   # required for keyless cosign OIDC signing
     needs:
       - build
     steps:
@@ -110,15 +111,26 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
       -
+        name: Install cosign
+        uses: sigstore/cosign-installer@v3.7.0  # TODO: pin to SHA via dependabot
+      -
         name: Create manifest list and push
         working-directory: /tmp/digests
         run: |
           docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
             $(printf '${{ env.REGISTRY_IMAGE }}@sha256:%s ' *)
       -
-        name: Inspect image
+        name: Inspect image and capture manifest digest
+        id: inspect
         run: |
           docker buildx imagetools inspect ${{ env.REGISTRY_IMAGE }}:${{ steps.meta.outputs.version }}
+          digest=$(docker buildx imagetools inspect ${{ env.REGISTRY_IMAGE }}:${{ steps.meta.outputs.version }} --format '{{json .Manifest}}' | jq -r .digest)
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      -
+        name: Sign image with cosign (keyless)
+        env:
+          DIGEST: ${{ steps.inspect.outputs.digest }}
+        run: cosign sign --yes "${{ env.REGISTRY_IMAGE }}@${DIGEST}"
   update-dockerhub-description:
     runs-on: ubuntu-latest
     permissions:

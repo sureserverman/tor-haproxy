@@ -1,0 +1,21 @@
+version: 2
+updates:
+  # Base image bumps in the Dockerfile.
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+      - "docker"
+
+  # GitHub Actions: pinned by SHA in the workflow files. Dependabot rewrites
+  # these to the newest SHA at the same major-version tag, using the
+  # `# v3` / `# v6` etc. comment next to each pin as the cadence target.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+      - "github-actions"
