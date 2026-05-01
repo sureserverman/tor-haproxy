@@ -112,7 +112,7 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
       -
         name: Install cosign
-        uses: sigstore/cosign-installer@v3.7.0  # TODO: pin to SHA via dependabot
+        uses: sigstore/cosign-installer@v4.1.1  # TODO: pin to SHA via dependabot
       -
         name: Create manifest list and push
         working-directory: /tmp/digests
