@@ -50,7 +50,7 @@
 
 ## How it works
 
-> 1. Clients connect to the container via **DNS-over-TLS** on port 853 (or configured PORT)
+> 1. Clients connect to the container via **DNS-over-TLS** on port 853
 > 2. **haproxy** relays the raw TCP stream (TLS passthrough) to an upstream DNS-over-TLS resolver
 > 3. haproxy's native **SOCKS4** support routes connections through **Tor's** SOCKS proxy on port 9050
 > 4. Tor's **MapAddress** directive maps a virtual IP (10.192.0.1) to Cloudflare's .onion resolver
@@ -72,12 +72,6 @@
 > with your desired bridges' strings in quotes
 >
 > After that just use IP-address of your container and port 853 as DNS-over-TLS upstream resolver
->
-> To use it for DNS-over-HTTPS do it this way:\
-> `docker run -d --name=tor-haproxy -e PORT=443 --restart=always sureserver/tor-haproxy:latest`
->
-> To use it for DNS do it this way:\
-> `docker run -d --name=tor-haproxy -e PORT=53 --restart=always sureserver/tor-haproxy:latest`
 
 ### Podman
 

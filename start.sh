@@ -25,20 +25,7 @@ echo "$BRIDGE1" | grep -Eq "$bridge_re" || { echo "ERROR: BRIDGE1 has invalid ob
 echo "$BRIDGE2" | grep -Eq "$bridge_re" || { echo "ERROR: BRIDGE2 has invalid obfs4 syntax" >&2; exit 1; }
 echo "$BRIDGE3" | grep -Eq "$bridge_re" || { echo "ERROR: BRIDGE3 has invalid obfs4 syntax" >&2; exit 1; }
 
-# PORT must be a positive integer in the valid TCP range.
-case "${PORT:-}" in
-    ''|*[!0-9]*) echo "ERROR: PORT must be numeric (got '${PORT:-}')" >&2; exit 1 ;;
-esac
-if [ "$PORT" -lt 1 ] || [ "$PORT" -gt 65535 ]; then
-    echo "ERROR: PORT $PORT out of range 1-65535" >&2; exit 1
-fi
-
 TOR_LOG=/tmp/tor.log
-HAPROXY_CFG=/tmp/haproxy.cfg
-
-# Render the haproxy config from its template (the template lives in /etc and
-# is read-only; the rendered copy in /tmp is per-container-run).
-sed "s/LISTEN_PORT/${PORT}/" /etc/haproxy/haproxy.cfg.template > "$HAPROXY_CFG"
 
 # Trap signals so a graceful shutdown reaches both processes.
 cleanup() {
@@ -73,7 +60,7 @@ for i in $(seq 1 60); do
 done
 
 # SOCKS4 routing through Tor is native — no torsocks needed.
-haproxy -f "$HAPROXY_CFG" -W &
+haproxy -f /etc/haproxy/haproxy.cfg -W &
 HAPROXY_PID=$!
 
 # Wait on whichever child exits first; signal the other and propagate the code.

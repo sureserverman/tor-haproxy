@@ -1,5 +1,5 @@
 # alpine 3.22 ships haproxy 3.2.16 (3.21 had 3.0.20). 3.1+ is needed for the
-# `init-state down` server keyword used in haproxy.cfg.template — it lets the
+# `init-state down` server keyword used in haproxy.cfg — it lets the
 # .onion primary start in DOWN state and promote to UP only after its first
 # health check succeeds, so the clearnet `backup` serves immediately at
 # cold-start instead of the user waiting ~20s for the primary's first
@@ -71,17 +71,16 @@ RUN apk -U --no-cache upgrade \
     && apk del .setcap-deps
 
 COPY --chown=root:root torrc /etc/tor/
-COPY --chown=root:root haproxy.cfg.template /etc/haproxy/haproxy.cfg.template
+COPY --chown=root:root haproxy.cfg /etc/haproxy/haproxy.cfg
 COPY --chown=root:root --chmod=755 start.sh /bin/
 
-ENV PORT=853
 HEALTHCHECK CMD dig +short +tls +norecurse +retry=0 -p 853 @127.0.0.1 google.com || exit 1
 
 # Remove apk and lock down app directory
 RUN $APP_DIR/post-install.sh
 
 # Run as unprivileged user. haproxy retains CAP_NET_BIND_SERVICE via file
-# capabilities so it can bind PORT=853 without UID 0. tor and lyrebird only
+# capabilities so it can bind 853 without UID 0. tor and lyrebird only
 # need outbound connections — no privileged ports.
 USER app
 

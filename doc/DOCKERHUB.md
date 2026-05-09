@@ -52,15 +52,6 @@ docker run -d --name=tor-haproxy \
   --restart=always sureserver/tor-haproxy:latest
 ```
 
-## Different protocols
-
-```bash
-# DNS-over-HTTPS
-docker run -d --name=tor-haproxy -e PORT=443 --restart=always sureserver/tor-haproxy:latest
-
-# Plain DNS
-docker run -d --name=tor-haproxy -e PORT=53 --restart=always sureserver/tor-haproxy:latest
-```
 
 ## Architecture
 
