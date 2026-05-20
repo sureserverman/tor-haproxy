@@ -19,9 +19,12 @@ ENV APP_DIR="/$APP_USER"
 ENV DATA_DIR="$APP_DIR/data"
 ENV CONF_DIR="$APP_DIR/conf"
 
-# Edge-community release pin for lyrebird; bump when alpine major version
-# changes. Override at build time with --build-arg LYREBIRD_VERSION=...
-ARG LYREBIRD_VERSION=0.8.1-r4
+# Edge-community release pin for lyrebird. Bump when alpine edge ships a new
+# `0.8.1-rN` revision — the package version is hard-pinned (`=`) on the apk
+# add line so `apk -U upgrade` will fail with `breaks: world[lyrebird=…]`
+# the moment edge moves ahead. Override at build time with
+# `--build-arg LYREBIRD_VERSION=…` to test a future bump without committing.
+ARG LYREBIRD_VERSION=0.8.1-r5
 
 RUN apk add --no-cache ca-certificates
 
