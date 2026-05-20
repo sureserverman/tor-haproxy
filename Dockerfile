@@ -63,7 +63,7 @@ WORKDIR $APP_DIR
 # then removes libcap ONLY if no other installed package (e.g. tor) depends
 # on it. Plain `apk del libcap` would fail with reverse-dep rejection.
 RUN apk -U --no-cache upgrade \
-    && apk add --no-cache tor haproxy bind-tools tini \
+    && apk add --no-cache tor haproxy bind-tools tini socat \
     && apk add --no-cache --virtual .setcap-deps libcap \
     && apk add --no-cache "lyrebird=${LYREBIRD_VERSION}" \
         --repository=https://dl-cdn.alpinelinux.org/alpine/edge/community/ \
@@ -73,6 +73,7 @@ RUN apk -U --no-cache upgrade \
 COPY --chown=root:root torrc /etc/tor/
 COPY --chown=root:root haproxy.cfg /etc/haproxy/haproxy.cfg
 COPY --chown=root:root status-summary.lua /etc/haproxy/status-summary.lua
+COPY --chown=root:root --chmod=755 probe-primary.sh /bin/probe-primary.sh
 COPY --chown=root:root --chmod=755 start.sh /bin/
 
 HEALTHCHECK CMD dig +short +tls +norecurse +retry=0 -p 853 @127.0.0.1 google.com || exit 1

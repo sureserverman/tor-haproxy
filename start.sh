@@ -31,6 +31,7 @@ TOR_LOG=/tmp/tor.log
 cleanup() {
     [ -n "${TOR_PID:-}" ] && kill -TERM "$TOR_PID" 2>/dev/null || true
     [ -n "${HAPROXY_PID:-}" ] && kill -TERM "$HAPROXY_PID" 2>/dev/null || true
+    [ -n "${PROBE_PID:-}" ] && kill -TERM "$PROBE_PID" 2>/dev/null || true
     wait 2>/dev/null || true
 }
 trap cleanup TERM INT
@@ -63,7 +64,15 @@ done
 haproxy -f /etc/haproxy/haproxy.cfg -W &
 HAPROXY_PID=$!
 
-# Wait on whichever child exits first; signal the other and propagate the code.
+# Latency-aware primary demotion (Stage 7 of the reliability plan).
+# Loops in the background, times SOCKS4 connects to the .onion every
+# PROBE_INTERVAL_S seconds, and uses haproxy's admin socket to switch
+# the primary server between ready and maint based on observed latency.
+# See probe-primary.sh for the full state machine + tunables.
+/bin/probe-primary.sh &
+PROBE_PID=$!
+
+# Wait on whichever child exits first; signal the others and propagate.
 wait -n
 ec=$?
 cleanup
