@@ -26,3 +26,27 @@ MapAddress 10.192.0.1 dns4torpnlfs2ifuz2s2yf3fc7rdmsbhm6rw75euj35pac6ap25zgqad.o
 # only RFC1918 destination we ever connect to here is 10.192.0.1, which the
 # MapAddress above redirects to a .onion — nothing escapes the loopback.
 ClientRejectInternalAddresses 0
+
+# Connection-warmth tuning for the long-lived haproxy → .onion DoT path.
+#
+# KeepalivePeriod 60 — send padding cells every 60s on idle circuits so the
+#   guard/middle relays don't tear them down for inactivity. Without this,
+#   between haproxy health checks (every 15s after our fix, but a single
+#   client query can leave the backend conn idle for the dnsmasq cache TTL),
+#   Tor may close the underlying circuit and the next query pays a fresh
+#   rendezvous build (5-15s) instead of reusing the warm circuit.
+#
+# CircuitsAvailableTimeout 3600 — keep pre-built circuits in the pool for an
+#   hour. Default is 30 min; with a DNS-only workload most pre-builts go
+#   unused, but the few we *do* use should stay warm across idle gaps.
+#
+# MaxCircuitDirtiness 600 — recycle each circuit's streams every 10 min.
+#   Default is 10 min; this is here as an explicit floor so future Tor
+#   defaults can't silently shorten it. We accept the 10-min reuse window
+#   as the privacy/warmth tradeoff: streams to the same .onion destination
+#   from the same client over the same circuit are correlatable, so capping
+#   at 10 min bounds that exposure. Longer than 10 min would gain
+#   warmth at meaningful anonymity cost.
+KeepalivePeriod 60
+CircuitsAvailableTimeout 3600
+MaxCircuitDirtiness 600
