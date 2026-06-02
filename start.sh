@@ -80,8 +80,21 @@ select_bridges() {
 load_and_validate() {
     _n=1
     while [ "$_n" -le "$MAX_BRIDGE_SLOTS" ]; do eval "unset BRIDGE${_n}"; _n=$((_n + 1)); done
-    # shellcheck disable=SC1090
-    [ -r "$SELECTED_ENV" ] && . "$SELECTED_ENV"
+    # Parse KEY=VALUE WITHOUT sourcing. The values are unquoted and contain
+    # spaces (the --env-file / EnvironmentFile= format), so `. file` would try
+    # to execute the value as a command (e.g. "1.2.3.4:80: not found", exit
+    # 127). Assign each BRIDGEn literally from the line instead.
+    if [ -r "$SELECTED_ENV" ]; then
+        while IFS= read -r _ln; do
+            case "$_ln" in
+                BRIDGE[0-9]*=*)
+                    _k=${_ln%%=*}
+                    _v=${_ln#*=}
+                    eval "$_k=\$_v"
+                    ;;
+            esac
+        done < "$SELECTED_ENV"
+    fi
     NBRIDGES=0
     _n=1
     while [ "$_n" -le "$MAX_BRIDGE_SLOTS" ]; do
