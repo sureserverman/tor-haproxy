@@ -11,25 +11,100 @@ umask 077
 # baked into the image. The previous defaults leaked real obfs4 fingerprints
 # and certificates into every published image layer.
 #
-# Exactly 3 bridges are required: that's the minimum for Tor 0.4.8+ Conflux
-# (≥3 distinct primary guards) on the onion-service traffic this image
-# carries, and the maximum that doesn't widen first-query latency variance
-# enough to push cold queries past typical client timeouts (8s+).
-: "${BRIDGE1:?BRIDGE1 must be set (e.g. -e BRIDGE1='obfs4 IP:PORT FPR cert=... iat-mode=0')}"
-: "${BRIDGE2:?BRIDGE2 must be set (e.g. -e BRIDGE2='obfs4 IP:PORT FPR cert=... iat-mode=0')}"
-: "${BRIDGE3:?BRIDGE3 must be set (e.g. -e BRIDGE3='obfs4 IP:PORT FPR cert=... iat-mode=0')}"
+# Three working bridges are ideal: that's the minimum for Tor 0.4.8+ Conflux
+# (≥3 distinct primary guards) on the onion-service traffic this image carries.
+# The operator may pass a *pool* of up to 16 candidates (BRIDGE1..BRIDGE16);
+# when the in-image evaluator (/bin/bridge-eval) is present it tests the pool
+# for real obfs4 usability and keeps the fastest-handshaking ones. At least one
+# usable bridge is required; fewer than 3 still runs but disables Conflux.
 
 # obfs4 line shape: 'obfs4 host:port 40-hex-fingerprint cert=<base64> iat-mode=[012]'
 bridge_re='^obfs4 [^[:space:]]+ [0-9A-Fa-f]{40} cert=[^[:space:]]+ iat-mode=[012]$'
-validate_bridges() {
-    for b in "$BRIDGE1" "$BRIDGE2" "$BRIDGE3"; do
-        if ! echo "$b" | grep -Eq "$bridge_re"; then
-            echo "ERROR: bridge has invalid obfs4 syntax: $b" >&2
-            return 1
-        fi
+
+MAX_BRIDGE_SLOTS=16
+SELECTED_ENV=/tmp/bridges-selected.env       # canonical chosen-bridge set (BRIDGE1..k)
+BRIDGE_EVAL="${BRIDGE_EVAL:-auto}"           # auto | off | moat | force
+BRIDGE_COUNT="${BRIDGE_COUNT:-3}"
+NBRIDGES=0
+
+# collect_pool: emit every set BRIDGEn (n=1..MAX) as a bare obfs4 line.
+collect_pool() {
+    _n=1
+    while [ "$_n" -le "$MAX_BRIDGE_SLOTS" ]; do
+        eval "_v=\${BRIDGE${_n}:-}"
+        [ -n "${_v:-}" ] && printf '%s\n' "$_v"
+        _n=$((_n + 1))
     done
 }
-validate_bridges || exit 1
+
+# select_bridges: write the chosen BRIDGE1..k to $SELECTED_ENV. Uses bridge-eval
+# to test real usability when enabled (default: only when a >count pool, or an
+# empty pool, is given — so exact-N deployments keep their existing fast path
+# and pay no extra bootstrap). Falls back to a straight passthrough of the pool
+# on any evaluator failure, so behaviour is never worse than before.
+select_bridges() {
+    _pool=/tmp/bridge-candidates.txt
+    collect_pool > "$_pool"
+    _pooln=$(grep -c . "$_pool" 2>/dev/null || true); _pooln=${_pooln:-0}
+
+    _do_eval=0
+    case "$BRIDGE_EVAL" in
+        off)        _do_eval=0 ;;
+        moat|force) _do_eval=1 ;;
+        auto)       [ "$_pooln" -gt "$BRIDGE_COUNT" ] && _do_eval=1
+                    [ "$_pooln" -eq 0 ] && _do_eval=1 ;;
+    esac
+
+    if [ "$_do_eval" = 1 ] && [ -x /bin/bridge-eval ]; then
+        echo "tor-supervisor: selecting bridges via bridge-eval (pool=$_pooln, want=$BRIDGE_COUNT, mode=$BRIDGE_EVAL)..."
+        if [ "$BRIDGE_EVAL" = moat ] || [ "$_pooln" -eq 0 ]; then
+            /bin/bridge-eval -count "$BRIDGE_COUNT" -min 1 -out "$SELECTED_ENV" && return 0
+        else
+            /bin/bridge-eval -candidates "$_pool" -count "$BRIDGE_COUNT" -min 1 -out "$SELECTED_ENV" && return 0
+        fi
+        echo "tor-supervisor: bridge-eval failed; using operator-supplied bridges as-is" >&2
+    fi
+
+    # Passthrough: emit the pool unchanged as BRIDGE1..k.
+    : > "$SELECTED_ENV"
+    _i=1
+    while IFS= read -r _line; do
+        [ -n "$_line" ] || continue
+        printf 'BRIDGE%d=%s\n' "$_i" "$_line" >> "$SELECTED_ENV"
+        _i=$((_i + 1))
+    done < "$_pool"
+}
+
+# load_and_validate: reset BRIDGE slots, source $SELECTED_ENV, validate each,
+# and set NBRIDGES. Returns non-zero if nothing usable.
+load_and_validate() {
+    _n=1
+    while [ "$_n" -le "$MAX_BRIDGE_SLOTS" ]; do eval "unset BRIDGE${_n}"; _n=$((_n + 1)); done
+    # shellcheck disable=SC1090
+    [ -r "$SELECTED_ENV" ] && . "$SELECTED_ENV"
+    NBRIDGES=0
+    _n=1
+    while [ "$_n" -le "$MAX_BRIDGE_SLOTS" ]; do
+        eval "_b=\${BRIDGE${_n}:-}"
+        if [ -n "${_b:-}" ]; then
+            if ! echo "$_b" | grep -Eq "$bridge_re"; then
+                echo "ERROR: BRIDGE${_n} has invalid obfs4 syntax: $_b" >&2
+                return 1
+            fi
+            NBRIDGES=$((NBRIDGES + 1))
+        fi
+        _n=$((_n + 1))
+    done
+    if [ "$NBRIDGES" -lt 1 ]; then
+        echo "ERROR: no usable bridges (supply BRIDGE1.. at runtime, or enable bridge-eval)" >&2
+        return 1
+    fi
+    [ "$NBRIDGES" -ge 3 ] || echo "tor-supervisor: WARNING: only $NBRIDGES bridge(s); Tor Conflux needs 3 — running without it." >&2
+    return 0
+}
+
+# Initial selection. Validation happens in launch_tor (fail-fast there).
+select_bridges
 
 TOR_LOG=/tmp/tor.log
 RESTART_FLAG=/tmp/tor-restart-flag
@@ -53,33 +128,38 @@ BRIDGES_REFRESH=/tmp/bridges-current.env
 # loop notices and shifts client traffic back without service
 # downtime from the client's perspective.
 
-# Read live bridges into BRIDGE{1,2,3}. If /tmp/bridges-current.env
-# exists (dropped by the host's recovery logic), source it so a
-# respawn uses the freshly-fetched bridges. Otherwise the original
-# env vars from `container run` remain in scope.
+# If /tmp/bridges-current.env exists (dropped by the host's recovery logic),
+# adopt it as the selected bridge set so a respawn uses the freshly-fetched
+# bridges. The host has already chosen these, so we do not re-evaluate.
 reload_bridges() {
     if [ -r "$BRIDGES_REFRESH" ]; then
-        # shellcheck disable=SC1090  # path is intentional and runtime-only
-        . "$BRIDGES_REFRESH" 2>/dev/null || true
+        cp "$BRIDGES_REFRESH" "$SELECTED_ENV" 2>/dev/null || true
         echo "tor-supervisor: reloaded bridges from $BRIDGES_REFRESH"
     fi
 }
 
-# Spawn (or respawn) tor with the current BRIDGE{1,2,3}. Caller must
-# have killed any previous TOR_PID first. Returns 0 on launch, 1 if
-# bridges are malformed (refusing to launch is safer than letting tor
-# bootstrap on garbage).
+# Spawn (or respawn) tor with the selected bridges (1..N). Caller must have
+# killed any previous TOR_PID first. Returns 0 on launch, 1 if no usable
+# bridge is available (refusing to launch is safer than bootstrapping on
+# garbage).
 launch_tor() {
     reload_bridges
-    if ! validate_bridges; then
-        echo "tor-supervisor: REFUSING to launch tor on invalid bridges" >&2
+    if ! load_and_validate; then
+        echo "tor-supervisor: REFUSING to launch tor on invalid/empty bridges" >&2
         return 1
     fi
+    # Build the "Bridge <line> Bridge <line> ..." argument list dynamically.
+    set --
+    _n=1
+    while [ "$_n" -le "$MAX_BRIDGE_SLOTS" ]; do
+        eval "_b=\${BRIDGE${_n}:-}"
+        [ -n "${_b:-}" ] && set -- "$@" Bridge "$_b"
+        _n=$((_n + 1))
+    done
     : > "$TOR_LOG"   # truncate so wait_for_tor_bootstrap below starts fresh
-    tor Bridge "$BRIDGE1" Bridge "$BRIDGE2" Bridge "$BRIDGE3" \
-        >"$TOR_LOG" 2>&1 &
+    tor "$@" >"$TOR_LOG" 2>&1 &
     TOR_PID=$!
-    echo "tor-supervisor: spawned tor pid=$TOR_PID"
+    echo "tor-supervisor: spawned tor pid=$TOR_PID with $NBRIDGES bridge(s)"
 }
 
 # Wait for the most recent tor to reach Bootstrapped 100% (5 min cap).
