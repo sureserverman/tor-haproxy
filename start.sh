@@ -23,7 +23,11 @@ bridge_re='^obfs4 [^[:space:]]+ [0-9A-Fa-f]{40} cert=[^[:space:]]+ iat-mode=[012
 
 MAX_BRIDGE_SLOTS=16
 SELECTED_ENV=/tmp/bridges-selected.env       # canonical chosen-bridge set (BRIDGE1..k)
-BRIDGE_EVAL="${BRIDGE_EVAL:-auto}"           # auto | off | moat | force
+BRIDGE_EVAL="${BRIDGE_EVAL:-off}"            # off (default): consume the host-selected bridges.env as-is.
+                                             # Selection now runs HOST-SIDE (bridge-eval `manage` on a timer);
+                                             # in-container eval (auto/moat/force) blocks haproxy startup ~150s
+                                             # and can trip HealthStartPeriod into a restart loop. Opt in only
+                                             # for debugging. Modes: off | auto | moat | force.
 BRIDGE_COUNT="${BRIDGE_COUNT:-3}"
 NBRIDGES=0
 

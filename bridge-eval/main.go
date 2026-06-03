@@ -97,6 +97,10 @@ func main() {
 	onionP := fs.String("onion", defaultOnion, "set-level .onion reachability target (informational)")
 	noOnionP := fs.Bool("no-onion", false, "skip the onion reachability check")
 	portP := fs.Int("port", 29050, "SOCKS port for the evaluation tor")
+	poolP := fs.String("pool", "", "persistent pool file: enables manage mode (fetch both sources, accumulate, prune only persistently-dead, select reachable)")
+	pruneFailsP := fs.Int("prune-fails", 4, "manage mode: prune a bridge after this many consecutive failed checks (and stale)")
+	staleDaysP := fs.Int("stale-days", 7, "manage mode: only prune bridges not seen alive within this many days")
+	listSourcesP := fs.Bool("list-sources", false, "fetch Moat + rdsys, print valid candidate bridges, and exit (no testing)")
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		os.Exit(2)
 	}
@@ -112,6 +116,37 @@ func main() {
 	}
 	if _, err := exec.LookPath(torBin); err != nil {
 		fatal("tor binary %q not found: %v", torBin, err)
+	}
+
+	// Debug: fetch both sources and print the valid candidates, then exit.
+	// Needs only network (no tor/PT) — handy for validating the sources.
+	if *listSourcesP {
+		m, me := fetchMoat()
+		r, re := fetchRdsys()
+		if me != nil {
+			logf("moat: %v", me)
+		}
+		if re != nil {
+			logf("rdsys: %v", re)
+		}
+		logf("moat=%d rdsys=%d candidate line(s); valid+deduped:", len(m), len(r))
+		for _, l := range dedupValid(append(append([]string{}, m...), r...)) {
+			fmt.Println(l)
+		}
+		return
+	}
+
+	// Manage mode: dual-source fetch + accumulate/prune persistent pool.
+	if *poolP != "" {
+		mcfg := config{torBin: torBin, ptBin: pt, window: time.Duration(*windowP) * time.Second,
+			grace: time.Duration(*graceP) * time.Second, port: port, onionPort: 853}
+		if !noOnion {
+			mcfg.onion = onion
+		}
+		if err := runManage(mcfg, *poolP, outPath, count, *pruneFailsP, *staleDaysP); err != nil {
+			fatal("manage: %v", err)
+		}
+		return
 	}
 
 	var candidates []string

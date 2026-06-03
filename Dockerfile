@@ -7,7 +7,7 @@ ARG TARGETARCH
 ARG TARGETVARIANT
 ENV CGO_ENABLED=0 GOOS=linux GOTOOLCHAIN=local GOPROXY=off
 WORKDIR /src
-COPY bridge-eval/go.mod bridge-eval/main.go ./
+COPY bridge-eval/go.mod bridge-eval/*.go ./
 RUN GOARCH="$TARGETARCH" GOARM="${TARGETVARIANT#v}" \
     go build -trimpath -ldflags='-s -w' -o /out/bridge-eval .
 
