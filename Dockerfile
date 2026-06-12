@@ -17,7 +17,7 @@ RUN GOARCH="$TARGETARCH" GOARM="${TARGETVARIANT#v}" \
 # health check succeeds, so the clearnet `backup` serves immediately at
 # cold-start instead of the user waiting ~20s for the primary's first
 # rendezvous build.
-FROM alpine:3.23.4
+FROM alpine:3.24.0
 
 LABEL org.opencontainers.image.source="https://github.com/sureserverman/tor-haproxy"
 
