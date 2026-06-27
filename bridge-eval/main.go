@@ -27,11 +27,13 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -430,10 +432,69 @@ func fetchMoat() ([]string, error) {
 	return obfs4Re.FindAllString(string(data), -1), nil
 }
 
-// bootstrapDialContext resolves hostnames via 1.1.1.1/9.9.9.9/8.8.8.8 (UDP 53)
-// independently of /etc/resolv.conf, then dials the resulting IP. Falls back
-// to the default resolver if the public resolvers are unreachable.
-func bootstrapDialContext() func(context.Context, string, string) (net.Conn, error) {
+// dohEndpoints are IP-literal DoH resolvers (RFC 8484 JSON, application/dns-json).
+// IP literals mean no DNS is needed to reach them, and the lookup rides HTTPS/443
+// — which a VPN DNS-lockdown does NOT block. (Mullvad with custom DNS = 127.0.0.1
+// redirects every :53 query to the dead loopback; that kills the UDP path below
+// AND the system-resolver fallback, but it leaves 443 alone.) Each IP's TLS cert
+// carries it as an IP SAN, so standard verification applies — no skip-verify.
+// A var (not const) so tests can point it at an httptest server.
+var dohEndpoints = []string{
+	"https://1.1.1.1/dns-query",
+	"https://9.9.9.9/dns-query",
+	"https://8.8.8.8/dns-query",
+}
+
+// dohLookup resolves host's A records via DoH JSON over HTTPS/443. Pure stdlib.
+// Returns nil if every endpoint fails or none return an A record.
+func dohLookup(ctx context.Context, host string) []string {
+	type dnsAnswer struct {
+		Type int    `json:"type"`
+		Data string `json:"data"`
+	}
+	type dnsResp struct {
+		Answer []dnsAnswer `json:"Answer"`
+	}
+	// Default transport: the endpoints are IP literals, so this does no DNS of
+	// its own — no chicken-and-egg with the lookup we are performing.
+	client := &http.Client{Timeout: 6 * time.Second}
+	for _, ep := range dohEndpoints {
+		u := ep + "?type=A&name=" + url.QueryEscape(host)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+		if err != nil {
+			continue
+		}
+		req.Header.Set("Accept", "application/dns-json")
+		resp, err := client.Do(req)
+		if err != nil {
+			continue
+		}
+		data, rerr := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+		resp.Body.Close()
+		if rerr != nil || resp.StatusCode != http.StatusOK {
+			continue
+		}
+		var dr dnsResp
+		if json.Unmarshal(data, &dr) != nil {
+			continue
+		}
+		var ips []string
+		for _, a := range dr.Answer {
+			if a.Type == 1 && net.ParseIP(a.Data) != nil { // type 1 == A record
+				ips = append(ips, a.Data)
+			}
+		}
+		if len(ips) > 0 {
+			return ips
+		}
+	}
+	return nil
+}
+
+// udpLookup resolves host via plain DNS over UDP/53 to public resolvers,
+// independent of /etc/resolv.conf. Secondary to DoH: it works on networks that
+// permit direct UDP/53 but mangle HTTPS, but is defeated by a :53 DNS-lockdown.
+func udpLookup(ctx context.Context, host string) []string {
 	resolver := &net.Resolver{
 		PreferGo: true,
 		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
@@ -449,6 +510,20 @@ func bootstrapDialContext() func(context.Context, string, string) (net.Conn, err
 			return nil, lastErr
 		},
 	}
+	ips, err := resolver.LookupHost(ctx, host)
+	if err != nil {
+		return nil
+	}
+	return ips
+}
+
+// bootstrapDialContext resolves hostnames independently of /etc/resolv.conf and
+// dials the resulting IP. It tries, in order: DoH over HTTPS/443 (survives a VPN
+// :53 DNS-lockdown such as Mullvad custom DNS = 127.0.0.1), then direct UDP/53 to
+// public resolvers, then the system resolver. This matters at boot because the
+// system resolver is the very nice-dns stack this run is trying to bring up
+// (resolv.conf -> 127.0.0.1), so it cannot be relied on first.
+func bootstrapDialContext() func(context.Context, string, string) (net.Conn, error) {
 	dialer := net.Dialer{Timeout: 10 * time.Second}
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
 		host, port, err := net.SplitHostPort(addr)
@@ -458,8 +533,11 @@ func bootstrapDialContext() func(context.Context, string, string) (net.Conn, err
 		if net.ParseIP(host) != nil {
 			return dialer.DialContext(ctx, network, addr)
 		}
-		ips, err := resolver.LookupHost(ctx, host)
-		if err != nil || len(ips) == 0 {
+		ips := dohLookup(ctx, host)
+		if len(ips) == 0 {
+			ips = udpLookup(ctx, host)
+		}
+		if len(ips) == 0 {
 			return dialer.DialContext(ctx, network, addr) // fall back to system resolver
 		}
 		return dialer.DialContext(ctx, network, net.JoinHostPort(ips[0], port))
