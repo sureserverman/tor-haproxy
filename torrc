@@ -40,13 +40,55 @@ ClientRejectInternalAddresses 0
 #   hour. Default is 30 min; with a DNS-only workload most pre-builts go
 #   unused, but the few we *do* use should stay warm across idle gaps.
 #
-# MaxCircuitDirtiness 600 — recycle each circuit's streams every 10 min.
-#   Default is 10 min; this is here as an explicit floor so future Tor
-#   defaults can't silently shorten it. We accept the 10-min reuse window
-#   as the privacy/warmth tradeoff: streams to the same .onion destination
-#   from the same client over the same circuit are correlatable, so capping
-#   at 10 min bounds that exposure. Longer than 10 min would gain
-#   warmth at meaningful anonymity cost.
+# MaxCircuitDirtiness 3600 — recycle each circuit's streams every hour.
+#   This was 600, noted as "longer than 10 min would gain warmth at
+#   meaningful anonymity cost". That tradeoff has been deliberately
+#   re-taken, because the cost of the 10-min window proved larger than
+#   assumed: for hidden services this is measured from the circuit's *last*
+#   use, so a DNS-only workload retires the rendezvous circuit after 10 idle
+#   minutes and the next query pays a full rebuild.
+#
+#   Benchmarked on nice-dns over the same 20 domains, fresh unbound cache
+#   per variant, run forward and reversed to control for drift. The two
+#   configurations carrying this setting were the only ones that stayed fast
+#   in both orderings:
+#
+#     MaxCircuitDirtiness 3600   median  998ms / 1013ms
+#     default 600 (baseline)     median 1730ms / 3675ms, p90 up to 9750ms,
+#                                max up to 30s
+#
+#   The anonymity cost is unchanged in kind and now larger in degree:
+#   streams to the same .onion from one client over one circuit are
+#   correlatable, and this widens that window from 10 minutes to an hour.
+#   It is an explicit choice for warmth, not an oversight.
 KeepalivePeriod 60
 CircuitsAvailableTimeout 3600
-MaxCircuitDirtiness 600
+MaxCircuitDirtiness 3600
+
+# ConfluxClientUX latency — the Conflux note at the top of this file relies
+#   on two link-disjoint rendezvous circuits being paired. Conflux defaults
+#   to "throughput", which optimises bulk transfer; DNS is the opposite
+#   workload. "latency" selects the MinRTT scheduler, which per proposal 329
+#   "works by always and only sending on the circuit with the current
+#   minimum RTT".
+#
+#   Honest status: this did NOT survive benchmarking. It looked like a ~45%
+#   median win running early in a sequence (932ms vs 1730ms baseline), then
+#   measured 2198ms when the same config ran late in the reversed run — it
+#   was tracking network drift, not configuration. Kept because the
+#   mechanism suits this workload and it costs nothing, not because it was
+#   measured to help.
+ConfluxClientUX latency
+
+# LongLivedPorts 853 — "circuits for streams that use these ports will
+#   contain only high-uptime nodes", and the manual notes the list "is also
+#   honored for circuits (both client and service side) involving hidden
+#   services whose virtual port is in this list". Our DoT onion is reached
+#   on virtual port 853, which is absent from the default list
+#   (21, 22, 706, 1863, ...). Biases the rendezvous circuit toward relays
+#   less likely to vanish mid-session — the event that forces a rebuild.
+#
+#   Honest status: inconclusive. It targets stall *frequency* rather than
+#   per-query latency, which a 20-sample benchmark cannot resolve; one run
+#   measured 1383ms and the other failed to bootstrap at all.
+LongLivedPorts 853
