@@ -37,7 +37,7 @@ ENV CONF_DIR="$APP_DIR/conf"
 # add line so `apk -U upgrade` will fail with `breaks: world[lyrebird=…]`
 # the moment edge moves ahead. Override at build time with
 # `--build-arg LYREBIRD_VERSION=…` to test a future bump without committing.
-ARG LYREBIRD_VERSION=0.8.1-r5
+ARG LYREBIRD_VERSION=0.8.1-r6
 
 RUN apk add --no-cache ca-certificates
 
