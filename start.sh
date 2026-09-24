@@ -1,6 +1,5 @@
 #!/bin/sh
 # This script targets Alpine's busybox ash, not strict POSIX sh.
-# shellcheck disable=SC3045  # wait -n is supported by busybox ash
 set -eu
 
 # Files we create (tor.log, rendered haproxy config) are owner-only —
@@ -126,6 +125,34 @@ select_bridges
 TOR_LOG=/tmp/tor.log
 RESTART_FLAG=/tmp/tor-restart-flag
 BRIDGES_REFRESH=/tmp/bridges-current.env
+# Acknowledged restart contract (nice-dns ARCH-03 request_recovery):
+#   host writes a request id to RESTART_REQUEST (atomically: tmp + mv);
+#   the image restarts only tor and answers in RESTART_ACK, TSV lines
+#     request_id <id>  status respawned|refused|rejected  generation <n>
+#     tor_pid <pid>    utc <time>
+#   GENERATION_FILE always holds the current generation and tor pid.
+# An acknowledgement says tor was respawned, not that it bootstrapped:
+# readiness is a separate, later observation. Touching RESTART_FLAG (the
+# older interface) still works and is acknowledged as request_id "legacy".
+RESTART_REQUEST=/tmp/tor-restart-request
+RESTART_PENDING=/tmp/tor-restart-pending
+RESTART_ACK=/tmp/tor-restart-ack
+GENERATION_FILE=/tmp/tor-generation
+GENERATION=0
+
+# write_kv <file> <request_id> <status> <generation> <tor_pid>: atomic TSV.
+write_kv() {
+    {
+        [ -n "$2" ] && printf 'request_id\t%s\nstatus\t%s\n' "$2" "$3"
+        printf 'generation\t%s\ntor_pid\t%s\nutc\t%s\n' "$4" "$5" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    } > "$1.tmp" && mv "$1.tmp" "$1"
+}
+
+# gen_field <key>: a field of the current GENERATION_FILE (for the watcher,
+# which runs in a subshell and cannot see GENERATION or TOR_PID).
+gen_field() {
+    awk -F '\t' -v k="$1" '$1 == k { print $2; exit }' "$GENERATION_FILE" 2>/dev/null
+}
 
 # Stage 8 (reliability plan): graceful in-container Tor restart.
 #
@@ -176,7 +203,9 @@ launch_tor() {
     : > "$TOR_LOG"   # truncate so wait_for_tor_bootstrap below starts fresh
     tor "$@" >"$TOR_LOG" 2>&1 &
     TOR_PID=$!
-    echo "tor-supervisor: spawned tor pid=$TOR_PID with $NBRIDGES bridge(s)"
+    GENERATION=$((GENERATION + 1))
+    write_kv "$GENERATION_FILE" "" "" "$GENERATION" "$TOR_PID"
+    echo "tor-supervisor: spawned tor pid=$TOR_PID generation=$GENERATION with $NBRIDGES bridge(s)"
 }
 
 # Wait for the most recent tor to reach Bootstrapped 100% (5 min cap).
@@ -212,7 +241,7 @@ trap cleanup TERM INT
 
 # Clear any stale restart marker so the watcher doesn't fire
 # immediately on a fresh start.
-rm -f "$RESTART_FLAG" "$BRIDGES_REFRESH"
+rm -f "$RESTART_FLAG" "$BRIDGES_REFRESH" "$RESTART_REQUEST" "$RESTART_PENDING" "$RESTART_ACK" "$GENERATION_FILE"
 
 echo "Waiting for Tor to bootstrap..."
 launch_tor || exit 1
@@ -237,6 +266,21 @@ PROBE_PID=$!
 (
     while true; do
         sleep 5
+        # A request is consumed only when no restart is in progress, so an
+        # acknowledgement is never lost to a second request.
+        if [ -f "$RESTART_REQUEST" ] && [ ! -f "$RESTART_FLAG" ]; then
+            _req=$(head -n 1 "$RESTART_REQUEST" 2>/dev/null || true)
+            rm -f "$RESTART_REQUEST"
+            # "legacy" is reserved for the flag interface's acknowledgements.
+            if [ "$_req" != legacy ] && printf '%s\n' "$_req" | grep -Eqx '[A-Za-z0-9._:-]{1,64}'; then
+                printf '%s\n' "$_req" > "$RESTART_PENDING"
+                echo "tor-supervisor: restart request $_req accepted"
+                : > "$RESTART_FLAG"
+            else
+                echo "tor-supervisor: restart request rejected (invalid id)" >&2
+                write_kv "$RESTART_ACK" invalid rejected "$(gen_field generation)" "$(gen_field tor_pid)"
+            fi
+        fi
         if [ -f "$RESTART_FLAG" ]; then
             echo "tor-supervisor: restart flag observed, sending SIGTERM to tor"
             pkill -TERM -x tor 2>/dev/null || true
@@ -254,20 +298,37 @@ WATCHER_PID=$!
 # container down (haproxy or probe-primary dying = bug, not a
 # planned event).
 while true; do
-    # Wait for ANY child. wait -n (no args) returns on whichever child
-    # exits first. With the watcher running infinitely, the only
-    # children that can exit are TOR_PID, HAPROXY_PID, PROBE_PID, or
-    # the watcher subshell itself (in error cases).
-    wait -n
-    ec=$?
+    # Poll until any child is gone. Not `wait -n`: busybox ash's `wait -n`
+    # returns only for a child that exits 0, so a tor killed for a planned
+    # restart (143) or a crashed haproxy was never noticed -- tor was not
+    # respawned and the container ran on without it. ash reaps background
+    # children while `sleep` runs, so `kill -0` fails once one has exited,
+    # and `wait <pid>` then returns its recorded status. Both are busybox ash
+    # behaviours (a zombie would still answer kill -0), proven on this image
+    # by nice-dns tests/integration/transport-haproxy; re-verify on a busybox
+    # upgrade.
+    while kill -0 "${TOR_PID:-0}" 2>/dev/null && kill -0 "${HAPROXY_PID:-0}" 2>/dev/null \
+        && kill -0 "${PROBE_PID:-0}" 2>/dev/null && kill -0 "${WATCHER_PID:-0}" 2>/dev/null; do
+        sleep 1
+    done
+    ec=0
+    for _p in "${TOR_PID:-}" "${HAPROXY_PID:-}" "${PROBE_PID:-}" "${WATCHER_PID:-}"; do
+        if [ -n "$_p" ] && ! kill -0 "$_p" 2>/dev/null; then
+            wait "$_p" 2>/dev/null || ec=$?
+            break
+        fi
+    done
 
     # Identify which child died. kill -0 returns 0 iff the process is
     # alive. We use the most-recent TOR_PID captured by launch_tor.
     if ! kill -0 "${TOR_PID:-0}" 2>/dev/null; then
         if [ -f "$RESTART_FLAG" ]; then
             echo "tor-supervisor: tor exited as part of planned restart, respawning"
-            rm -f "$RESTART_FLAG"
+            _req=$(cat "$RESTART_PENDING" 2>/dev/null || true)
+            [ -n "$_req" ] || _req=legacy
+            rm -f "$RESTART_PENDING" "$RESTART_FLAG"
             if launch_tor; then
+                write_kv "$RESTART_ACK" "$_req" respawned "$GENERATION" "$TOR_PID"
                 wait_for_tor_bootstrap || true
                 # If bridges file was a one-shot drop, remove it so the
                 # next reload reverts to original env vars unless the
@@ -275,6 +336,7 @@ while true; do
                 rm -f "$BRIDGES_REFRESH"
                 continue
             else
+                write_kv "$RESTART_ACK" "$_req" refused "$GENERATION" 0
                 echo "tor-supervisor: respawn refused (bad bridges); exiting" >&2
                 cleanup
                 exit 1

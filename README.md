@@ -88,6 +88,28 @@
 > `podman generate systemd --name tor-haproxy --new > ~/.config/systemd/user/tor-haproxy.service`\
 > `systemctl --user enable --now tor-haproxy.service`
 
+## Routes
+
+> Port 853 is the legacy listener: the Cloudflare .onion first, Cloudflare's 1.1.1.1 via a Tor exit as backup. It is Cloudflare only. The earlier Quad9 (9.9.9.9) fallback was removed, because a client that authenticates a Cloudflare name must never have its stream handed to another provider.
+>
+> Three identity-bound routes reach exactly one provider each, with no backup or fallback to another provider:
+>
+> | Port | Route | Destinations (through Tor) |
+> |---|---|---|
+> | 18531 | cloudflare-onion | Cloudflare's resolver .onion (virtual IP 10.192.0.1) |
+> | 18532 | cloudflare-exit | 1.1.1.1:853, 1.0.0.1:853 via a Tor exit |
+> | 18533 | quad9-exit | 9.9.9.9:853, 149.112.112.112:853 via a Tor exit |
+>
+> The TLS session is end to end between your client and the provider. Your client must verify the provider's name for the route it uses. The client, not this image, chooses between routes. Each route listener accepts at most 128 connections; 853 accepts 256.
+>
+> Route backends have no health checks, by design: a check exists to steer traffic elsewhere, and these routes have nowhere else to go. A failing provider shows up as failed client connections, which the client's route policy observes.
+>
+> Trust boundary: provider separation is enforced by the static `haproxy.cfg`. The runtime socket `/tmp/haproxy.sock` is admin-level, because the latency probe needs `set server ... state`. It is mode 0660 and owned by the image's own user. A process running as that user could repoint a server at runtime. The client's TLS name check is the final guard: a stream sent to another provider fails verification instead of being answered.
+
+## Restarting Tor without restarting the container
+
+> Write a request id (1–64 characters from `A-Za-z0-9._:-`) to `/tmp/tor-restart-request` inside the container. Write a temp file and `mv` it, so the write is atomic. Within about 5 seconds only Tor is restarted; haproxy keeps running. The answer appears in `/tmp/tor-restart-ack` as tab-separated lines: `request_id`, `status` (`respawned`, `refused` or `rejected`), `generation`, `tor_pid` and `utc`. `/tmp/tor-generation` always names the current generation and Tor pid. An acknowledgement means Tor was respawned, not that it has bootstrapped. Check readiness separately. Touching `/tmp/tor-restart-flag` (the older interface) still works; it is acknowledged as request id `legacy`.
+
 ## Differences from tor-socat
 
 | | tor-socat | tor-haproxy |

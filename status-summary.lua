@@ -6,7 +6,7 @@
 -- — does not interact with serving traffic.
 --
 -- Output shape (sent at level "info" → journal label haproxy[...]):
---   backends primary=UP backup=UP fallback=UP
+--   backends primary=UP backup=UP
 -- Status field uses haproxy's internal STATE_UP / STATE_DOWN values
 -- (UP / DOWN / NOLB / MAINT / DRAIN / no check).
 --
@@ -22,10 +22,10 @@ core.register_task(function()
             core.Info("backends dns_resolvers proxy not found")
         else
             local parts = {}
-            -- Iterate servers in a stable order: primary first, then backup,
-            -- then fallback. The proxy.servers map is keyed by name; we
-            -- emit in declaration order if pairs() doesn't preserve it.
-            for _, name in ipairs({"primary", "backup", "fallback"}) do
+            -- Iterate servers in a stable order: primary first, then backup.
+            -- The proxy.servers map is keyed by name; we emit in
+            -- declaration order if pairs() doesn't preserve it.
+            for _, name in ipairs({"primary", "backup"}) do
                 local srv = proxy.servers[name]
                 if srv then
                     local st = srv:get_stats()

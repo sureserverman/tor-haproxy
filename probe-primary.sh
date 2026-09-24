@@ -29,7 +29,7 @@
 #   primary-probe t=580ms streak=fast/3 → promoting to ready
 #
 # Exits non-zero on unrecoverable error (admin socket gone, socat missing,
-# etc.) — start.sh's `wait -n` will then tear down the whole container.
+# etc.) — start.sh's supervisor loop will then tear down the whole container.
 
 set -u
 
