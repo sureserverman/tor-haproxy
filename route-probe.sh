@@ -51,10 +51,14 @@ if [ ! -r "$ca" ]; then
   exit 1
 fi
 
-t0=$(date +%s%3N)
+# Milliseconds from /proc/uptime (10 ms resolution): busybox date has no
+# sub-second format, so date +%s%3N prints whole seconds.
+now_ms() { awk '{ printf "%d\n", $1 * 1000 }' /proc/uptime; }
+
+t0=$(now_ms)
 out=$(dig +tls +tls-ca="$ca" +tls-hostname="$name" +tries=1 +retry=0 +time="$t" \
   -p "$port" @127.0.0.1 "$qname" "$qtype" 2>&1)
-t1=$(date +%s%3N)
+t1=$(now_ms)
 rcode=$(printf '%s\n' "$out" | sed -n 's/^;; ->>HEADER<<- opcode: [A-Z]*, status: \([A-Z]*\), id: [0-9]*$/\1/p' | head -n 1)
 case "$rcode" in
   NOERROR|NXDOMAIN) result=ok ;;
