@@ -100,6 +100,8 @@
 > | 18532 | cloudflare-exit | 1.1.1.1:853, 1.0.0.1:853 via a Tor exit |
 > | 18533 | quad9-exit | 9.9.9.9:853, 149.112.112.112:853 via a Tor exit |
 >
+> tor-socat offers the same routes with one address per exit route (1.1.1.1, 9.9.9.9); here each exit route balances over two addresses of the same provider. Either way a route reaches exactly one provider.
+>
 > The TLS session is end to end between your client and the provider. Your client must verify the provider's name for the route it uses. The client, not this image, chooses between routes. Each route listener accepts at most 128 connections; 853 accepts 256.
 >
 > Route backends have no health checks, by design: a check exists to steer traffic elsewhere, and these routes have nowhere else to go. A failing provider shows up as failed client connections, which the client's route policy observes.
@@ -108,7 +110,7 @@
 
 ## Restarting Tor without restarting the container
 
-> Write a request id (1–64 characters from `A-Za-z0-9._:-`) to `/tmp/tor-restart-request` inside the container. Write a temp file and `mv` it, so the write is atomic. Within about 5 seconds only Tor is restarted; haproxy keeps running. The answer appears in `/tmp/tor-restart-ack` as tab-separated lines: `request_id`, `status` (`respawned`, `refused` or `rejected`), `generation`, `tor_pid` and `utc`. `/tmp/tor-generation` always names the current generation and Tor pid. An acknowledgement means Tor was respawned, not that it has bootstrapped. Check readiness separately. Touching `/tmp/tor-restart-flag` (the older interface) still works; it is acknowledged as request id `legacy`.
+> As the image's own user (the default for `docker exec`/`podman exec`), write a request id (1–64 characters from `A-Za-z0-9._:-`; `legacy` is reserved) to `/app/data/control/tor-restart-request`. Write a temp file in the same directory and `mv` it, so the write is atomic. `/app/data/control` is 0700, so no other user can request a restart or forge an answer. Within about 5 seconds only Tor is restarted; haproxy keeps running. The answer appears in `/app/data/control/tor-restart-ack` as tab-separated lines: `request_id`, `status` (`respawned` or `refused`), `generation`, `tor_pid` and `utc`. An invalid id is answered in `tor-restart-rejected` instead, never over a pending acknowledgement. `/app/data/control/tor-generation` always names the current generation and Tor pid. An acknowledgement means Tor was respawned, not that it has bootstrapped. Check readiness separately. Touching `/tmp/tor-restart-flag` (the older interface) still works; it is acknowledged as request id `legacy`.
 
 ## Differences from tor-socat
 

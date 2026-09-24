@@ -53,7 +53,7 @@ RUN rm -fr /var/spool/cron /etc/crontabs /etc/periodic \
     && find /sbin /usr/sbin ! -type d -a ! -name apk -a ! -name ln -delete \
     && find / -xdev -type d -perm +0002 -exec chmod o-w {} + \
     && find / -xdev -type f -perm +0002 -exec chmod o-w {} + \
-    && chmod 777 /tmp/ && chown $APP_USER:root /tmp/ \
+    && chmod 1777 /tmp/ && chown $APP_USER:root /tmp/ \
     && sed -i -r "/^($APP_USER|root|nobody)/!d" /etc/group \
     && sed -i -r "/^($APP_USER|root|nobody)/!d" /etc/passwd \
     && sed -i -r 's#^(.*):[^:]*$#\1:/sbin/nologin#' /etc/passwd \

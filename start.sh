@@ -126,19 +126,34 @@ TOR_LOG=/tmp/tor.log
 RESTART_FLAG=/tmp/tor-restart-flag
 BRIDGES_REFRESH=/tmp/bridges-current.env
 # Acknowledged restart contract (nice-dns ARCH-03 request_recovery):
-#   host writes a request id to RESTART_REQUEST (atomically: tmp + mv);
+#   host writes a request id to RESTART_REQUEST (atomically: tmp + mv in
+#   the same directory);
 #   the image restarts only tor and answers in RESTART_ACK, TSV lines
-#     request_id <id>  status respawned|refused|rejected  generation <n>
+#     request_id <id>  status respawned|refused  generation <n>
 #     tor_pid <pid>    utc <time>
 #   GENERATION_FILE always holds the current generation and tor pid.
 # An acknowledgement says tor was respawned, not that it bootstrapped:
 # readiness is a separate, later observation. Touching RESTART_FLAG (the
 # older interface) still works and is acknowledged as request_id "legacy".
-RESTART_REQUEST=/tmp/tor-restart-request
-RESTART_PENDING=/tmp/tor-restart-pending
-RESTART_ACK=/tmp/tor-restart-ack
-GENERATION_FILE=/tmp/tor-generation
+# The request, acknowledgement and generation files live in CONTROL_DIR, a
+# 0700 directory of the image's own user, so only that user can request a
+# restart or forge an answer (/tmp is shared by every uid). Rejections go to
+# RESTART_REJECTED, never over a pending acknowledgement.
+CONTROL_DIR="${DATA_DIR:-/app/data}/control"
+RESTART_REQUEST=$CONTROL_DIR/tor-restart-request
+RESTART_PENDING=$CONTROL_DIR/tor-restart-pending
+RESTART_ACK=$CONTROL_DIR/tor-restart-ack
+RESTART_REJECTED=$CONTROL_DIR/tor-restart-rejected
+GENERATION_FILE=$CONTROL_DIR/tor-generation
 GENERATION=0
+if [ -L "$CONTROL_DIR" ] || { [ -e "$CONTROL_DIR" ] && [ ! -d "$CONTROL_DIR" ]; }; then
+    echo "ERROR: $CONTROL_DIR is not a real directory; refusing" >&2
+    exit 1
+fi
+if ! { mkdir -p "$CONTROL_DIR" && chmod 700 "$CONTROL_DIR"; }; then
+    echo "ERROR: cannot prepare $CONTROL_DIR" >&2
+    exit 1
+fi
 
 # write_kv <file> <request_id> <status> <generation> <tor_pid>: atomic TSV.
 write_kv() {
@@ -241,7 +256,7 @@ trap cleanup TERM INT
 
 # Clear any stale restart marker so the watcher doesn't fire
 # immediately on a fresh start.
-rm -f "$RESTART_FLAG" "$BRIDGES_REFRESH" "$RESTART_REQUEST" "$RESTART_PENDING" "$RESTART_ACK" "$GENERATION_FILE"
+rm -f "$RESTART_FLAG" "$BRIDGES_REFRESH" "$RESTART_REQUEST" "$RESTART_REQUEST.claimed" "$RESTART_PENDING" "$RESTART_ACK" "$RESTART_REJECTED" "$GENERATION_FILE"
 
 echo "Waiting for Tor to bootstrap..."
 launch_tor || exit 1
@@ -283,7 +298,7 @@ PROBE_PID=$!
                 : > "$RESTART_FLAG"
             else
                 echo "tor-supervisor: restart request rejected (invalid id)" >&2
-                write_kv "$RESTART_ACK" invalid rejected "$(gen_field generation)" "$(gen_field tor_pid)"
+                write_kv "$RESTART_REJECTED" invalid rejected "$(gen_field generation)" "$(gen_field tor_pid)"
             fi
         fi
         if [ -f "$RESTART_FLAG" ]; then
