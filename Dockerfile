@@ -93,7 +93,11 @@ COPY --chown=root:root --chmod=755 probe-primary.sh /bin/probe-primary.sh
 COPY --chown=root:root --chmod=755 start.sh /bin/
 COPY --from=bridge-eval-build --chown=root:root --chmod=755 /out/bridge-eval /bin/bridge-eval
 
-HEALTHCHECK CMD dig +short +tls +norecurse +retry=0 -p 853 @127.0.0.1 google.com || exit 1
+# Healthy only when an answer line comes back: dig +tls exits 0 when the TCP
+# connection is accepted and then dropped (no upstream), and dig +short prints
+# its ";;" error lines on stdout, so neither the exit status nor "any output"
+# means an answer.
+HEALTHCHECK CMD dig +short +tls +norecurse +retry=0 -p 853 @127.0.0.1 google.com 2>/dev/null | grep -q '^[^;]' || exit 1
 
 # Remove apk and lock down app directory
 RUN $APP_DIR/post-install.sh

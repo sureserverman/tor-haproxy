@@ -40,9 +40,8 @@ podman run -d --name=tor-haproxy -p 853:853 --restart=always sureserver/tor-hapr
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PORT` | `853` | Listening port (853 for DoT, 443 for DoH, 53 for DNS) |
-| `BRIDGE1` | *(built-in)* | First obfs4 bridge string |
-| `BRIDGE2` | *(built-in)* | Second obfs4 bridge string |
+| `BRIDGE1`..`BRIDGE16` | *(none; required)* | obfs4 bridge lines; at least one, three for Conflux |
+| `BRIDGE_EVAL` | `off` | In-container bridge evaluation: `off`, `auto`, `moat` or `force` |
 
 ## Custom bridges
 

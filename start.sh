@@ -269,8 +269,13 @@ PROBE_PID=$!
         # A request is consumed only when no restart is in progress, so an
         # acknowledgement is never lost to a second request.
         if [ -f "$RESTART_REQUEST" ] && [ ! -f "$RESTART_FLAG" ]; then
-            _req=$(head -n 1 "$RESTART_REQUEST" 2>/dev/null || true)
-            rm -f "$RESTART_REQUEST"
+            # Claim the request by rename before reading it: a request
+            # written meanwhile lands as a new file and is not lost.
+            _req=""
+            if mv "$RESTART_REQUEST" "$RESTART_REQUEST.claimed" 2>/dev/null; then
+                _req=$(head -n 1 "$RESTART_REQUEST.claimed" 2>/dev/null || true)
+                rm -f "$RESTART_REQUEST.claimed"
+            fi
             # "legacy" is reserved for the flag interface's acknowledgements.
             if [ "$_req" != legacy ] && printf '%s\n' "$_req" | grep -Eqx '[A-Za-z0-9._:-]{1,64}'; then
                 printf '%s\n' "$_req" > "$RESTART_PENDING"
