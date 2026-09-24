@@ -91,13 +91,25 @@ COPY --chown=root:root haproxy.cfg /etc/haproxy/haproxy.cfg
 COPY --chown=root:root status-summary.lua /etc/haproxy/status-summary.lua
 COPY --chown=root:root --chmod=755 probe-primary.sh /bin/probe-primary.sh
 COPY --chown=root:root --chmod=755 start.sh /bin/
+COPY --chown=root:root --chmod=755 route-probe.sh /usr/local/bin/nice-dns-route-probe
 COPY --from=bridge-eval-build --chown=root:root --chmod=755 /out/bridge-eval /bin/bridge-eval
 
-# Healthy only when an answer line comes back: dig +tls exits 0 when the TCP
-# connection is accepted and then dropped (no upstream), and dig +short prints
-# its ";;" error lines on stdout, so neither the exit status nor "any output"
-# means an answer.
-HEALTHCHECK CMD dig +short +tls +norecurse +retry=0 -p 853 @127.0.0.1 google.com 2>/dev/null | grep -q '^[^;]' || exit 1
+# Healthy only when an authenticated DNS response comes back through the
+# legacy listener: nice-dns-route-probe verifies the certificate chain and the
+# name the consumer authenticates, and reads the response code (NXDOMAIN is
+# working transport; SERVFAIL, REFUSED or no response is not). A deployment
+# that selects another route sets NICE_DNS_HEALTH_PORT and
+# NICE_DNS_HEALTH_TLS_NAME to that route's port and name.
+HEALTHCHECK CMD nice-dns-route-probe "${NICE_DNS_HEALTH_PORT:-853}" "${NICE_DNS_HEALTH_TLS_NAME:-tor.cloudflare-dns.com}" >/dev/null || exit 1
+
+# The transport interface this image implements (nice-dns ARCH-04/ARCH-05):
+# route=port pairs, the verifying probe, and the acknowledged restart
+# contract ($DATA_DIR/control). Consumers check these before activating a
+# route; the legacy :853 listener stays for older consumers.
+LABEL org.nice-dns.transport.interface="nice-dns-transport/2" \
+      org.nice-dns.transport.routes="cloudflare-onion=18531 cloudflare-exit=18532 quad9-exit=18533 cloudflare-legacy=853" \
+      org.nice-dns.transport.probe="/usr/local/bin/nice-dns-route-probe" \
+      org.nice-dns.transport.restart="control-dir-ack"
 
 # Remove apk and lock down app directory
 RUN $APP_DIR/post-install.sh
