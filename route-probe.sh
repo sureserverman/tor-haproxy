@@ -22,7 +22,10 @@
 #
 # The verdict comes from the response header only: dig exits 0 on a dropped
 # TLS connection, and +short output mixes ";;" errors with answers.
-# NICE_DNS_PROBE_TIMEOUT (default 10 s) bounds the query. Exit 2: usage.
+# NICE_DNS_PROBE_TIMEOUT (default 10 s) bounds the whole probe: dig 9.20
+# applies +time per stage and a silent TLS peer (a frozen Tor) held it for
+# 20-30 s, so dig runs under timeout(1) and an expiry is result=no-answer
+# error=timeout. Exit 2: usage.
 
 set -u
 
@@ -56,8 +59,9 @@ fi
 now_ms() { awk '{ printf "%d\n", $1 * 1000 }' /proc/uptime; }
 
 t0=$(now_ms)
-out=$(dig +tls +tls-ca="$ca" +tls-hostname="$name" +tries=1 +retry=0 +time="$t" \
+out=$(timeout -s KILL "$t" dig +tls +tls-ca="$ca" +tls-hostname="$name" +tries=1 +retry=0 +time="$t" \
   -p "$port" @127.0.0.1 "$qname" "$qtype" 2>&1)
+drc=$?
 t1=$(now_ms)
 rcode=$(printf '%s\n' "$out" | sed -n 's/^;; ->>HEADER<<- opcode: [A-Z]*, status: \([A-Z]*\), id: [0-9]*$/\1/p' | head -n 1)
 case "$rcode" in
@@ -65,5 +69,7 @@ case "$rcode" in
   '') result=no-answer rcode=- ;;
   *) result=dns-error ;;
 esac
-printf 'port=%s name=%s result=%s rcode=%s ms=%s\n' "$port" "$name" "$result" "$rcode" "$((t1 - t0))"
+extra=''
+[ "$drc" -eq 137 ] && [ "$result" = no-answer ] && extra=' error=timeout'
+printf 'port=%s name=%s result=%s rcode=%s ms=%s%s\n' "$port" "$name" "$result" "$rcode" "$((t1 - t0))" "$extra"
 [ "$result" = ok ]
