@@ -29,7 +29,7 @@
 #   primary-probe t=580ms streak=fast/3 → promoting to ready
 #
 # Exits non-zero on unrecoverable error (admin socket gone, socat missing,
-# etc.) — start.sh's `wait -n` will then tear down the whole container.
+# etc.) — start.sh's supervisor loop will then tear down the whole container.
 
 set -u
 
@@ -74,18 +74,24 @@ current_state() {
         | awk -F, -v s="$SERVER" '$2 == s { print $18; exit }'
 }
 
+# Milliseconds from /proc/uptime (10 ms resolution). busybox date has no
+# sub-second format: date +%s%3N printed whole seconds, so every probe under
+# SLOW_THRESHOLD_MS seconds counted as fast and a slow primary was never
+# demoted.
+now_ms() { awk '{ printf "%d\n", $1 * 1000 }' /proc/uptime; }
+
 # One latency probe to 10.192.0.1:853 via SOCKS4 at 127.0.0.1:9050.
 # Echoes the elapsed milliseconds, or "TIMEOUT" on exceeded budget,
 # or "ERR<N>" on socat failure (e.g. SOCKS rejected).
 probe_once() {
-    t0=$(date +%s%3N)
+    t0=$(now_ms)
     timeout "$PROBE_TIMEOUT_S" socat -T 5 - \
         "SOCKS4:127.0.0.1:10.192.0.1:853,socksport=9050" </dev/null >/dev/null 2>&1
     # Capture rc on the immediate next line — busybox ash's `local x=$?`
     # runs `local` first and so $? becomes 0 (local's exit code), not the
     # exit code of the timeout/socat pipeline we actually care about.
     rc=$?
-    t1=$(date +%s%3N)
+    t1=$(now_ms)
     if [ "$rc" -eq 0 ]; then
         echo "$((t1 - t0))"
         return 0

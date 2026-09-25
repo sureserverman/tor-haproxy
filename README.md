@@ -88,12 +88,46 @@
 > `podman generate systemd --name tor-haproxy --new > ~/.config/systemd/user/tor-haproxy.service`\
 > `systemctl --user enable --now tor-haproxy.service`
 
+## Routes
+
+> Port 853 is the legacy listener: the Cloudflare .onion first, Cloudflare's 1.1.1.1 via a Tor exit as backup. It is Cloudflare only. The earlier Quad9 (9.9.9.9) fallback was removed, because a client that authenticates a Cloudflare name must never have its stream handed to another provider.
+>
+> Three identity-bound routes reach exactly one provider each, with no backup or fallback to another provider:
+>
+> | Port | Route | Destinations (through Tor) |
+> |---|---|---|
+> | 18531 | cloudflare-onion | Cloudflare's resolver .onion (virtual IP 10.192.0.1) |
+> | 18532 | cloudflare-exit | 1.1.1.1:853, 1.0.0.1:853 via a Tor exit |
+> | 18533 | quad9-exit | 9.9.9.9:853, 149.112.112.112:853 via a Tor exit |
+>
+> tor-socat offers the same routes with one address per exit route (1.1.1.1, 9.9.9.9); here each exit route balances over two addresses of the same provider. Either way a route reaches exactly one provider.
+>
+> The TLS session is end to end between your client and the provider. Your client must verify the provider's name for the route it uses. The client, not this image, chooses between routes. Each route listener accepts at most 128 connections; 853 accepts 256.
+>
+> Route backends have no health checks, by design: a check exists to steer traffic elsewhere, and these routes have nowhere else to go. A failing provider shows up as failed client connections, which the client's route policy observes.
+>
+> Trust boundary: provider separation is enforced by the static `haproxy.cfg`. The runtime socket `/tmp/haproxy.sock` is admin-level, because the latency probe needs `set server ... state`. It is mode 0660 and owned by the image's own user. A process running as that user could repoint a server at runtime. The client's TLS name check is the final guard: a stream sent to another provider fails verification instead of being answered.
+
+## Restarting Tor without restarting the container
+
+> As the image's own user (the default for `docker exec`/`podman exec`), write a request id (1–64 characters from `A-Za-z0-9._:-`; `legacy` is reserved) to `/app/data/control/tor-restart-request`. Write a temp file in the same directory and `mv` it, so the write is atomic. `/app/data/control` is 0700, so no other user can request a restart or forge an answer. Within about 5 seconds only Tor is restarted; haproxy keeps running. The answer appears in `/app/data/control/tor-restart-ack` as tab-separated lines: `request_id`, `status` (`respawned` or `refused`), `generation`, `tor_pid` and `utc`. An invalid id is answered in `tor-restart-rejected` instead, never over a pending acknowledgement. `/app/data/control/tor-generation` always names the current generation and Tor pid. An acknowledgement means Tor was respawned, not that it has bootstrapped. Check readiness separately. Touching `/tmp/tor-restart-flag` (the older interface) still works; it is acknowledged as request id `legacy`.
+
+## Probing a route; the health check
+
+> `nice-dns-route-probe PORT TLS_NAME [QNAME [QTYPE]]` sends one DNS-over-TLS query through a listener of this image and prints one line, for example `port=18532 name=one.one.one.one result=ok rcode=NOERROR ms=640`. The certificate must chain to the image CA store (`NICE_DNS_PROBE_CA` overrides it) and match `TLS_NAME`. Pass the name your client authenticates on that route. `result=ok` means a DNS response with NOERROR or NXDOMAIN; a valid negative answer is working transport. `result=dns-error` means another response code, such as SERVFAIL or REFUSED. `result=no-answer` means no DNS response: a refused or dropped connection, a certificate or name that failed verification, or a timeout (`NICE_DNS_PROBE_TIMEOUT`, default 10 s). The exit status is 0 only for `ok`. The query defaults to `. SOA` (`NICE_DNS_PROBE_QNAME` overrides the name); no client name is ever sent. `nice-dns-route-probe --capabilities` prints what the probe verifies.
+>
+> The image `HEALTHCHECK` is that probe on the legacy listener with `tor.cloudflare-dns.com`, the name its clients authenticate there. A wrong-name, untrusted or expired certificate, SERVFAIL or a dropped stream is unhealthy. A deployment that uses another route sets `NICE_DNS_HEALTH_PORT` and `NICE_DNS_HEALTH_TLS_NAME`.
+>
+> The image labels declare the interface: `org.nice-dns.transport.interface` (`nice-dns-transport/2`), `org.nice-dns.transport.routes` (route=port pairs), `org.nice-dns.transport.probe` and `org.nice-dns.transport.restart` (`control-dir-ack`, the restart contract above).
+>
+> Migration from the earlier image: the health check used to accept any certificate and any answer to `google.com`, so it could report a wrong provider or an unauthenticated session as healthy. Clients of port 853 need no change. A client that ran its own `dig +tls` checks should verify the name the same way.
+
 ## Differences from tor-socat
 
 | | tor-socat | tor-haproxy |
 |---|---|---|
 | Local protocol | TLS passthrough | TLS passthrough (identical client behavior) |
-| Failover | Shell-based health checks (`dig` probe every 30s) | haproxy health checks (`inter 30s fall 3 rise 2`) |
+| Failover | Shell-based health checks (`nice-dns-route-probe` every 30s) | haproxy health checks (`inter 30s fall 3 rise 2`) |
 | Tor routing | socat SOCKS4A | haproxy native `socks4` keyword |
 | .onion support | SOCKS4A hostname resolution | Tor `MapAddress` to virtual IP |
 | Health monitoring | Active DNS health checks every 30s | Active TCP health checks every 30s |
