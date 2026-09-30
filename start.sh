@@ -2,8 +2,9 @@
 # This script targets Alpine's busybox ash, not strict POSIX sh.
 set -eu
 
-# Files we create (tor.log, rendered haproxy config) are owner-only —
-# tor circuit info and bridge parameters are visible in startup logs.
+# Files we create (tor.log and tor.log.prev on the data volume, rendered
+# haproxy config) are owner-only — tor circuit info and bridge parameters
+# are visible in startup logs.
 umask 077
 
 # Bridges MUST be supplied by the operator at runtime — no defaults are
@@ -122,7 +123,10 @@ load_and_validate() {
 # Initial selection. Validation happens in launch_tor (fail-fast there).
 select_bridges
 
-TOR_LOG=/tmp/tor.log
+# Tor's own log is on the data volume, owner-only (it names the bridges), and
+# a launch keeps the previous run's as tor.log.prev (Sub-plan 5 Task 1.4,
+# fix B): in /tmp, truncated at each launch, every earlier stall left no trace.
+TOR_LOG="${DATA_DIR:-/app/data}/tor.log"
 RESTART_FLAG=/tmp/tor-restart-flag
 BRIDGES_REFRESH=/tmp/bridges-current.env
 # Acknowledged restart contract (nice-dns ARCH-03 request_recovery):
@@ -215,7 +219,8 @@ launch_tor() {
         [ -n "${_b:-}" ] && set -- "$@" Bridge "$_b"
         _n=$((_n + 1))
     done
-    : > "$TOR_LOG"   # truncate so wait_for_tor_bootstrap below starts fresh
+    if [ -s "$TOR_LOG" ]; then mv -f "$TOR_LOG" "$TOR_LOG.prev"; fi
+    : > "$TOR_LOG"   # a fresh log, so wait_for_tor_bootstrap reads this run only
     tor "$@" >"$TOR_LOG" 2>&1 &
     TOR_PID=$!
     GENERATION=$((GENERATION + 1))
@@ -223,23 +228,79 @@ launch_tor() {
     echo "tor-supervisor: spawned tor pid=$TOR_PID generation=$GENERATION with $NBRIDGES bridge(s)"
 }
 
-# Wait for the most recent tor to reach Bootstrapped 100% (5 min cap).
+# Sub-plan 5 Task 1.4 (fix B): readiness is a working stream. Tor reports
+# "Bootstrapped 100%" from its cached consensus before it can build a circuit
+# (nice-dns, mac 2026-09-29: reported 2 s after start, then every stream
+# "waiting for circuit" for 2 min). So the wait below also needs one SOCKS
+# stream through Tor, to the exit route's resolver or to the onion (either
+# route carries the stack; an exit-only probe would call a Tor whose onion
+# works unready for ever), before it reports readiness (the line nice-dns'
+# macOS agent reads) and the listeners start.
+#
+# The probes run in the background and the loop polls once a second, so a
+# stop signal is handled within about a second even while a circuit stalls
+# (a foreground probe would hold the trap for its whole timeout). A failed
+# probe is retried 5 s after it started. cleanup ends them: busybox timeout
+# runs the command in the process whose pid we hold, so the TERM reaches socat.
+STREAM_PROBE_EXIT=1.1.1.1:853
+STREAM_PROBE_ONION=10.192.0.1:853   # torrc MapAddress: the Cloudflare onion
+PROBE_EXIT_PID=""
+PROBE_ONION_PID=""
+# Seconds since boot: a wall clock that steps would stretch or cut the cap.
+_uptime() { cut -d. -f1 /proc/uptime; }
+_probes_stop() {
+    for _p in "$PROBE_EXIT_PID" "$PROBE_ONION_PID"; do
+        [ -n "$_p" ] && kill -TERM "$_p" 2>/dev/null || true
+    done
+    PROBE_EXIT_PID="" PROBE_ONION_PID=""
+}
+
+# Wait for the most recent tor to reach Bootstrapped 100% and carry a stream
+# (5 min cap).
 # Non-fatal: caller decides what to do on early-exit / timeout.
 wait_for_tor_bootstrap() {
-    i=0
-    while [ "$i" -lt 60 ]; do
-        if grep -q "Bootstrapped 100%" "$TOR_LOG" 2>/dev/null; then
-            echo "Tor bootstrapped successfully."
-            return 0
+    _t0=$(_uptime)
+    _boot="" _via="" _es=0 _os=0
+    while [ $(( $(_uptime) - _t0 )) -lt 300 ]; do
+        _now=$(( $(_uptime) - _t0 ))
+        if [ -z "$_boot" ] && grep -q "Bootstrapped 100%" "$TOR_LOG" 2>/dev/null; then
+            _boot=$_now
+        fi
+        if [ -n "$_boot" ]; then
+            if [ -n "$PROBE_EXIT_PID" ] && ! kill -0 "$PROBE_EXIT_PID" 2>/dev/null; then
+                if wait "$PROBE_EXIT_PID"; then _via="exit"; fi
+                PROBE_EXIT_PID=""
+            fi
+            if [ -n "$PROBE_ONION_PID" ] && ! kill -0 "$PROBE_ONION_PID" 2>/dev/null; then
+                if wait "$PROBE_ONION_PID"; then _via="${_via:-onion}"; fi
+                PROBE_ONION_PID=""
+            fi
+            if [ -n "$_via" ]; then
+                _probes_stop
+                echo "tor-supervisor: bootstrapped after ${_boot} s, a stream works after ${_now} s (${_via})"
+                echo "Tor bootstrapped successfully."
+                return 0
+            fi
+            if [ -z "$PROBE_EXIT_PID" ] && [ "$_now" -ge "$_es" ]; then
+                timeout 20 socat -u /dev/null "SOCKS4A:127.0.0.1:${STREAM_PROBE_EXIT},socksport=9050" >/dev/null 2>&1 &
+                PROBE_EXIT_PID=$!
+                _es=$((_now + 5))
+            fi
+            if [ -z "$PROBE_ONION_PID" ] && [ "$_now" -ge "$_os" ]; then
+                timeout 20 socat -u /dev/null "SOCKS4A:127.0.0.1:${STREAM_PROBE_ONION},socksport=9050" >/dev/null 2>&1 &
+                PROBE_ONION_PID=$!
+                _os=$((_now + 5))
+            fi
         fi
         if ! kill -0 "$TOR_PID" 2>/dev/null; then
+            _probes_stop
             echo "ERROR: tor exited before bootstrap." >&2
             cat "$TOR_LOG" >&2
             return 1
         fi
-        sleep 5
-        i=$((i + 1))
+        sleep 1
     done
+    _probes_stop
     echo "WARNING: Tor did not bootstrap in 5 minutes."
     return 2
 }
@@ -250,9 +311,13 @@ cleanup() {
     [ -n "${HAPROXY_PID:-}" ] && kill -TERM "$HAPROXY_PID" 2>/dev/null || true
     [ -n "${PROBE_PID:-}" ] && kill -TERM "$PROBE_PID" 2>/dev/null || true
     [ -n "${WATCHER_PID:-}" ] && kill -TERM "$WATCHER_PID" 2>/dev/null || true
+    [ -n "${PROBE_EXIT_PID:-}" ] && kill -TERM "$PROBE_EXIT_PID" 2>/dev/null || true
+    [ -n "${PROBE_ONION_PID:-}" ] && kill -TERM "$PROBE_ONION_PID" 2>/dev/null || true
     wait 2>/dev/null || true
 }
-trap cleanup TERM INT
+# Exit after cleanup (as tor-socat does): a stop during the wait for a working
+# stream would otherwise resume, find tor gone and go on to start haproxy.
+trap 'cleanup; exit 143' TERM INT
 
 # Clear any stale restart marker so the watcher doesn't fire
 # immediately on a fresh start.
