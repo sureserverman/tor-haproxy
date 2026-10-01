@@ -138,7 +138,9 @@ BRIDGES_REFRESH=/tmp/bridges-current.env
 #   GENERATION_FILE always holds the current generation and tor pid.
 # An acknowledgement says tor was respawned, not that it bootstrapped:
 # readiness is a separate, later observation. Touching RESTART_FLAG (the
-# older interface) still works and is acknowledged as request_id "legacy".
+# older interface) still works and is acknowledged as request_id "legacy". A respawn the
+# image makes after a host sleep (suspend_check) is acknowledged as request_id
+# "suspend". Both ids are reserved: a request carrying one is rejected.
 # The request, acknowledgement and generation files live in CONTROL_DIR, a
 # 0700 directory of the image's own user, so only that user can request a
 # restart or forge an answer (/tmp is shared by every uid). Rejections go to
@@ -333,6 +335,77 @@ wait_for_tor_bootstrap() {
     return 2
 }
 
+# After a host sleep (Stage 1 gate round 2, nice-dns 2026-10-01): Tor in the
+# macOS container VM kept circuits the sleep had killed and refused every
+# stream for 10-20 s, while a respawned tor carried one about 1 s after it
+# started. The watcher below sees a sleep as wall time that passed while the
+# uptime did not: the VM was frozen with the host. A native Linux suspend
+# counts in /proc/uptime and a container pause advances both clocks, so
+# neither is seen (Tor recovered by itself after a Linux suspend).
+# suspend_check <seconds>, run by the watcher:
+#   - a tor younger than SUSPEND_MIN_AGE (its generation's spawn time) is
+#     left alone: a clock step during its first bootstrap is no sleep, and a
+#     repeated step respawns at most once per SUSPEND_MIN_AGE;
+#   - it waits, up to 30 s, until one of tor's IPv4 bridges accepts a TCP
+#     connect (the network is back), then probes one stream to the exit
+#     resolver and one to the onion in parallel (6 s); a working one keeps
+#     tor (its circuits are warm);
+#   - a restart requested meanwhile ends the check: the request's own respawn
+#     serves it;
+#   - otherwise tor is respawned as a planned restart, acknowledged as
+#     request "suspend".
+# TOR_SUSPEND_GAP (at least 10), TOR_SUSPEND_MIN_AGE, TOR_SUSPEND_UPTIME_FILE
+# and TOR_SUSPEND_NET_PROBE (host:port) exist for the transport tests.
+SUSPEND_GAP="${TOR_SUSPEND_GAP:-20}"
+case "$SUSPEND_GAP" in ''|*[!0-9]*) SUSPEND_GAP=20 ;; esac
+[ "$SUSPEND_GAP" -ge 10 ] || SUSPEND_GAP=10
+SUSPEND_MIN_AGE="${TOR_SUSPEND_MIN_AGE:-120}"
+case "$SUSPEND_MIN_AGE" in ''|*[!0-9]*) SUSPEND_MIN_AGE=120 ;; esac
+SUSPEND_UPTIME="${TOR_SUSPEND_UPTIME_FILE:-/proc/uptime}"
+# _restart_asked: a restart is in progress or requested.
+_restart_asked() { [ -f "$RESTART_FLAG" ] || [ -f "$RESTART_REQUEST" ]; }
+suspend_check() {
+    _spawn=$(date -u -d "$(gen_field utc | sed 's/T/ /; s/Z$//')" +%s 2>/dev/null || echo 0)
+    if [ $(( $(date +%s) - _spawn )) -lt "$SUSPEND_MIN_AGE" ]; then
+        echo "tor-supervisor: the host slept about $1 s; tor is younger than ${SUSPEND_MIN_AGE} s, kept"
+        return 0
+    fi
+    if [ -n "${TOR_SUSPEND_NET_PROBE:-}" ]; then
+        _nps="$TOR_SUSPEND_NET_PROBE"
+    else
+        _tp=$(gen_field tor_pid)
+        _nps=$(tr '\0' ' ' < "/proc/${_tp:-0}/cmdline" 2>/dev/null | grep -oE 'obfs4 [0-9]+[.][0-9]+[.][0-9]+[.][0-9]+:[0-9]+' | cut -d' ' -f2 || true)
+    fi
+    echo "tor-supervisor: the host slept about $1 s; waiting for one of $(printf '%s\n' "$_nps" | grep -c .) bridge address(es)"
+    _i=0 _up=""
+    while [ -n "$_nps" ] && [ -z "$_up" ] && [ "$_i" -lt 30 ]; do
+        _restart_asked && { echo "tor-supervisor: a restart was asked during the check; it serves the sleep"; return 0; }
+        for _np in $_nps; do
+            if socat -u /dev/null "TCP4:$_np,connect-timeout=1" >/dev/null 2>&1; then _up=1; break; fi
+        done
+        [ -n "$_up" ] || { _i=$((_i + 1)); sleep 1; }
+    done
+    [ -n "$_up" ] || echo "tor-supervisor: no bridge answered within 30 s; probing streams anyway"
+    timeout 6 socat -u /dev/null "SOCKS4A:127.0.0.1:${STREAM_PROBE_EXIT},socksport=9050" >/dev/null 2>&1 &
+    _pe=$!
+    timeout 6 socat -u /dev/null "SOCKS4A:127.0.0.1:${STREAM_PROBE_ONION},socksport=9050" >/dev/null 2>&1 &
+    _po=$!
+    _ok=1
+    wait "$_pe" && _ok=0
+    wait "$_po" && _ok=0
+    if [ "$_ok" -eq 0 ]; then
+        echo "tor-supervisor: a stream works after the sleep; tor kept"
+        return 0
+    fi
+    if _restart_asked; then
+        echo "tor-supervisor: a restart was asked during the check; it serves the sleep"
+        return 0
+    fi
+    echo "tor-supervisor: no stream within 6 s after the sleep; respawning tor"
+    printf 'suspend\n' > "$RESTART_PENDING"
+    : > "$RESTART_FLAG"
+}
+
 # Trap signals so a graceful shutdown reaches every child.
 cleanup() {
     [ -n "${TOR_PID:-}" ] && kill -TERM "$TOR_PID" 2>/dev/null || true
@@ -362,8 +435,21 @@ rm -f "$RESTART_FLAG" "$BRIDGES_REFRESH" "$RESTART_REQUEST" "$RESTART_REQUEST.cl
 # watcher doesn't need to track TOR_PID across respawns; one less
 # coupling between the subshell and the main loop.
 (
+    _sw=$(date +%s); _su=$(cut -d. -f1 "$SUSPEND_UPTIME" 2>/dev/null || true)
     while true; do
         sleep 5
+        # A sleep: wall time minus uptime grew (see suspend_check). A failed
+        # uptime read skips the comparison and starts it anew.
+        _w=$(date +%s); _u=$(cut -d. -f1 "$SUSPEND_UPTIME" 2>/dev/null || true)
+        case "$_u$_su" in
+            ''|*[!0-9]*) ;;
+            *)
+                _gap=$(( (_w - _sw) - (_u - _su) ))
+                if [ "$_gap" -ge "$SUSPEND_GAP" ] && ! _restart_asked; then
+                    suspend_check "$_gap"
+                fi ;;
+        esac
+        _sw=$(date +%s); _su=$(cut -d. -f1 "$SUSPEND_UPTIME" 2>/dev/null || true)
         # A request is consumed only when no restart is in progress, so an
         # acknowledgement is never lost to a second request.
         if [ -f "$RESTART_REQUEST" ] && [ ! -f "$RESTART_FLAG" ]; then
@@ -374,8 +460,9 @@ rm -f "$RESTART_FLAG" "$BRIDGES_REFRESH" "$RESTART_REQUEST" "$RESTART_REQUEST.cl
                 _req=$(head -n 1 "$RESTART_REQUEST.claimed" 2>/dev/null || true)
                 rm -f "$RESTART_REQUEST.claimed"
             fi
-            # "legacy" is reserved for the flag interface's acknowledgements.
-            if [ "$_req" != legacy ] && printf '%s\n' "$_req" | grep -Eqx '[A-Za-z0-9._:-]{1,64}'; then
+            # "legacy" and "suspend" are reserved for the image's own
+            # acknowledgements (the flag interface; suspend_check).
+            if [ "$_req" != legacy ] && [ "$_req" != suspend ] && printf '%s\n' "$_req" | grep -Eqx '[A-Za-z0-9._:-]{1,64}'; then
                 printf '%s\n' "$_req" > "$RESTART_PENDING"
                 echo "tor-supervisor: restart request $_req accepted"
                 : > "$RESTART_FLAG"
