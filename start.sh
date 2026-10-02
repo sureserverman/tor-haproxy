@@ -549,6 +549,10 @@ while true; do
         else
             echo "tor-supervisor: tor died unexpectedly (rc=$ec)" >&2
             cleanup
+            # An unrequested exit is a failure even when the child exited 0:
+            # the runtime restarts the proxy only on a failure status
+            # (Restart=on-failure; tor-socat does the same).
+            [ "$ec" -ne 0 ] || ec=1
             exit "$ec"
         fi
     fi
@@ -566,5 +570,6 @@ while true; do
         echo "tor-supervisor: unknown child exited (rc=$ec); tearing down" >&2
     fi
     cleanup
+    [ "$ec" -ne 0 ] || ec=1
     exit "$ec"
 done
