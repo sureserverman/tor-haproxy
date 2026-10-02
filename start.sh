@@ -347,14 +347,13 @@ wait_for_tor_bootstrap() {
 #     left alone: a clock step during its first bootstrap is no sleep, and a
 #     repeated step respawns at most once per SUSPEND_MIN_AGE;
 #   - it waits, up to 30 s, until one of tor's IPv4 bridges accepts a TCP
-#     connect (the network is back);
+#     connect (the network is back), then probes one stream to the exit
+#     resolver and one to the onion in parallel (6 s); a working one keeps
+#     tor (its circuits are warm);
 #   - a restart requested meanwhile ends the check: the request's own respawn
 #     serves it;
-#   - otherwise tor is respawned at once as a planned restart, acknowledged
-#     as request "suspend". No stream is probed first: on the Mac the old
-#     tor's streams hung in each of 3 instrumented wakes (a probe only adds
-#     its timeout), and a first client lookup is sent within seconds of a
-#     wake.
+#   - otherwise tor is respawned as a planned restart, acknowledged as
+#     request "suspend".
 # TOR_SUSPEND_GAP (at least 10), TOR_SUSPEND_MIN_AGE, TOR_SUSPEND_UPTIME_FILE
 # and TOR_SUSPEND_NET_PROBE (host:port) exist for the transport tests.
 SUSPEND_GAP="${TOR_SUSPEND_GAP:-20}"
@@ -386,12 +385,23 @@ suspend_check() {
         done
         [ -n "$_up" ] || { _i=$((_i + 1)); sleep 1; }
     done
-    [ -n "$_up" ] || echo "tor-supervisor: no bridge answered within 30 s; respawning tor anyway"
+    [ -n "$_up" ] || echo "tor-supervisor: no bridge answered within 30 s; probing streams anyway"
+    timeout 6 socat -u /dev/null "SOCKS4A:127.0.0.1:${STREAM_PROBE_EXIT},socksport=9050" >/dev/null 2>&1 &
+    _pe=$!
+    timeout 6 socat -u /dev/null "SOCKS4A:127.0.0.1:${STREAM_PROBE_ONION},socksport=9050" >/dev/null 2>&1 &
+    _po=$!
+    _ok=1
+    wait "$_pe" && _ok=0
+    wait "$_po" && _ok=0
+    if [ "$_ok" -eq 0 ]; then
+        echo "tor-supervisor: a stream works after the sleep; tor kept"
+        return 0
+    fi
     if _restart_asked; then
         echo "tor-supervisor: a restart was asked during the check; it serves the sleep"
         return 0
     fi
-    echo "tor-supervisor: tor's circuits do not survive a sleep; respawning tor"
+    echo "tor-supervisor: no stream within 6 s after the sleep; respawning tor"
     printf 'suspend\n' > "$RESTART_PENDING"
     : > "$RESTART_FLAG"
 }
