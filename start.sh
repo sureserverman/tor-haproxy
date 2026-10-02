@@ -151,6 +151,8 @@ RESTART_PENDING=$CONTROL_DIR/tor-restart-pending
 RESTART_ACK=$CONTROL_DIR/tor-restart-ack
 RESTART_REJECTED=$CONTROL_DIR/tor-restart-rejected
 GENERATION_FILE=$CONTROL_DIR/tor-generation
+# Seconds since boot when the current tor was spawned (suspend_check's age).
+TOR_SPAWN_UPTIME=$CONTROL_DIR/tor-spawn-uptime
 GENERATION=0
 if [ -L "$CONTROL_DIR" ] || { [ -e "$CONTROL_DIR" ] && [ ! -d "$CONTROL_DIR" ]; }; then
     echo "ERROR: $CONTROL_DIR is not a real directory; refusing" >&2
@@ -227,6 +229,7 @@ launch_tor() {
     TOR_PID=$!
     GENERATION=$((GENERATION + 1))
     write_kv "$GENERATION_FILE" "" "" "$GENERATION" "$TOR_PID"
+    cut -d. -f1 "$SUSPEND_UPTIME" > "$TOR_SPAWN_UPTIME" 2>/dev/null || rm -f "$TOR_SPAWN_UPTIME"
     echo "tor-supervisor: spawned tor pid=$TOR_PID generation=$GENERATION with $NBRIDGES bridge(s)"
 }
 
@@ -343,7 +346,8 @@ wait_for_tor_bootstrap() {
 # counts in /proc/uptime and a container pause advances both clocks, so
 # neither is seen (Tor recovered by itself after a Linux suspend).
 # suspend_check <seconds>, run by the watcher:
-#   - a tor younger than SUSPEND_MIN_AGE (its generation's spawn time) is
+#   - a tor that has run less than SUSPEND_MIN_AGE seconds of uptime (since
+#     its spawn; a wall clock step adds none), or whose age is unknown, is
 #     left alone: a clock step during its first bootstrap is no sleep, and a
 #     repeated step respawns at most once per SUSPEND_MIN_AGE;
 #   - it waits, up to 30 s, until one of tor's IPv4 bridges accepts a TCP
@@ -365,15 +369,22 @@ SUSPEND_UPTIME="${TOR_SUSPEND_UPTIME_FILE:-/proc/uptime}"
 # _restart_asked: a restart is in progress or requested.
 _restart_asked() { [ -f "$RESTART_FLAG" ] || [ -f "$RESTART_REQUEST" ]; }
 suspend_check() {
-    _spawn=$(date -u -d "$(gen_field utc | sed 's/T/ /; s/Z$//')" +%s 2>/dev/null || echo 0)
-    if [ $(( $(date +%s) - _spawn )) -lt "$SUSPEND_MIN_AGE" ]; then
+    _spawn=$(cat "$TOR_SPAWN_UPTIME" 2>/dev/null || true)
+    _now=$(cut -d. -f1 "$SUSPEND_UPTIME" 2>/dev/null || true)
+    case "$_spawn" in ''|*[!0-9]*) _spawn="" ;; esac
+    case "$_now" in ''|*[!0-9]*) _now="" ;; esac
+    if [ -z "$_spawn" ] || [ -z "$_now" ]; then
+        echo "tor-supervisor: the host slept about $1 s; tor's age is unknown, kept"
+        return 0
+    fi
+    if [ $(( _now - _spawn )) -lt "$SUSPEND_MIN_AGE" ]; then
         echo "tor-supervisor: the host slept about $1 s; tor is younger than ${SUSPEND_MIN_AGE} s, kept"
         return 0
     fi
     if [ -n "${TOR_SUSPEND_NET_PROBE:-}" ]; then
         _nps="$TOR_SUSPEND_NET_PROBE"
     else
-        _tp=$(gen_field tor_pid)
+        _tp=$(gen_field tor_pid || true)
         _nps=$(tr '\0' ' ' < "/proc/${_tp:-0}/cmdline" 2>/dev/null | grep -oE 'obfs4 [0-9]+[.][0-9]+[.][0-9]+[.][0-9]+:[0-9]+' | cut -d' ' -f2 || true)
     fi
     echo "tor-supervisor: the host slept about $1 s; waiting for one of $(printf '%s\n' "$_nps" | grep -c .) bridge address(es)"
@@ -422,7 +433,7 @@ trap 'cleanup; exit 143' TERM INT
 
 # Clear any stale restart marker so the watcher doesn't fire
 # immediately on a fresh start.
-rm -f "$RESTART_FLAG" "$BRIDGES_REFRESH" "$RESTART_REQUEST" "$RESTART_REQUEST.claimed" "$RESTART_PENDING" "$RESTART_ACK" "$RESTART_REJECTED" "$GENERATION_FILE"
+rm -f "$RESTART_FLAG" "$BRIDGES_REFRESH" "$RESTART_REQUEST" "$RESTART_REQUEST.claimed" "$RESTART_PENDING" "$RESTART_ACK" "$RESTART_REJECTED" "$GENERATION_FILE" "$TOR_SPAWN_UPTIME"
 
 # Started before the first wait, so a restart request is honored while the
 # supervisor waits for a working stream (up to 5 minutes).
