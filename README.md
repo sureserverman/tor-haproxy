@@ -67,9 +67,12 @@
 > If you want to access it from your host, publish port 853 like this:\
 > `docker run -d --name=tor-haproxy -p 853:853 --restart=always sureserver/tor-haproxy:latest`
 >
-> This image uses obfs4 bridges to access tor network. There is a pair of them in this image. If you want to use another ones, just do it like this:\
+> This image uses obfs4 bridges to access tor network. None are baked into the image: pass at least one at runtime (or set `TOR_BRIDGES=off` to run Tor direct), like this:\
 > `docker run -d --name=tor-haproxy -e BRIDGE1="obfs4 IP:PORT FINGERPRINT cert=... iat-mode=0" -e BRIDGE2="obfs4 IP:PORT FINGERPRINT cert=... iat-mode=0" --restart=always sureserver/tor-haproxy:latest`
 > with your desired bridges' strings in quotes
+>
+> To run Tor direct, without bridges, set `TOR_BRIDGES=off` (the default is `on`). The `BRIDGE1`..`BRIDGE16` and `BRIDGE_EVAL` settings are then ignored; any other value of `TOR_BRIDGES` makes the container refuse to start:\
+> `docker run -d --name=tor-haproxy -e TOR_BRIDGES=off --restart=always sureserver/tor-haproxy:latest`
 >
 > After that just use IP-address of your container and port 853 as DNS-over-TLS upstream resolver
 

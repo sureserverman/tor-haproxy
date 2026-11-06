@@ -7,7 +7,8 @@ set -eu
 # are visible in startup logs.
 umask 077
 
-# Bridges MUST be supplied by the operator at runtime — no defaults are
+# Bridges MUST be supplied by the operator at runtime unless the bridges
+# mode below is off (Tor then runs direct) — no defaults are
 # baked into the image. The previous defaults leaked real obfs4 fingerprints
 # and certificates into every published image layer.
 #
@@ -15,14 +16,16 @@ umask 077
 # (≥3 distinct primary guards) on the onion-service traffic this image carries.
 # The operator may pass a *pool* of up to 16 candidates (BRIDGE1..BRIDGE16);
 # when the in-image evaluator (/bin/bridge-eval) is present it tests the pool
-# for real obfs4 usability and keeps the fastest-handshaking ones. At least one
-# usable bridge is required; fewer than 3 still runs but disables Conflux.
+# for real obfs4 usability and keeps the fastest-handshaking ones. With bridges
+# on, at least one usable bridge is required; fewer than 3 still runs but
+# disables Conflux.
 
 # obfs4 line shape: 'obfs4 host:port 40-hex-fingerprint cert=<base64> iat-mode=[012]'
 bridge_re='^obfs4 [^[:space:]]+ [0-9A-Fa-f]{40} cert=[^[:space:]]+ iat-mode=[012]$'
 
 MAX_BRIDGE_SLOTS=16
 SELECTED_ENV=/tmp/bridges-selected.env       # canonical chosen-bridge set (BRIDGE1..k)
+BRIDGE_EVAL_GIVEN="${BRIDGE_EVAL:-}"         # as the operator set it (the bridges-off notice)
 BRIDGE_EVAL="${BRIDGE_EVAL:-off}"            # off (default): consume the host-selected bridges.env as-is.
                                              # Selection now runs HOST-SIDE (bridge-eval `manage` on a timer);
                                              # in-container eval (auto/moat/force) blocks haproxy startup ~150s
@@ -30,6 +33,17 @@ BRIDGE_EVAL="${BRIDGE_EVAL:-off}"            # off (default): consume the host-s
                                              # for debugging. Modes: off | auto | moat | force.
 BRIDGE_COUNT="${BRIDGE_COUNT:-3}"
 NBRIDGES=0
+
+# Bridges mode (TOR_BRIDGES): on (default) runs Tor over the obfs4 bridges below; off runs Tor direct.
+TOR_BRIDGES="${TOR_BRIDGES:-on}"
+case "$TOR_BRIDGES" in
+    on|off) ;;
+    *) echo "ERROR: TOR_BRIDGES must be on or off (got '$TOR_BRIDGES')" >&2; exit 1 ;;
+esac
+BRIDGES_OFF=0; [ "$TOR_BRIDGES" = off ] && BRIDGES_OFF=1
+# With bridges off nothing below reads, selects, evaluates, refreshes or
+# validates a bridge: BRIDGE1..16, BRIDGE_EVAL, BRIDGE_COUNT and a dropped
+# /tmp/bridges-current.env are ignored, and tor gets UseBridges 0.
 
 # collect_pool: emit every set BRIDGEn (n=1..MAX) as a bare obfs4 line.
 collect_pool() {
@@ -121,7 +135,13 @@ load_and_validate() {
 }
 
 # Initial selection. Validation happens in launch_tor (fail-fast there).
-select_bridges
+# With bridges off, say once that any bridge settings given are ignored.
+if [ "$BRIDGES_OFF" = 1 ]; then
+    [ -z "$(collect_pool)" ] || echo "tor-supervisor: bridges off: BRIDGE1..16 ignored"
+    [ -z "$BRIDGE_EVAL_GIVEN" ] || echo "tor-supervisor: bridges off: BRIDGE_EVAL=$BRIDGE_EVAL_GIVEN ignored"
+else
+    select_bridges
+fi
 
 # Tor's own log is on the data volume, owner-only (it names the bridges), and
 # a launch keeps the previous run's as tor.log.prev (Sub-plan 5 Task 1.4,
@@ -184,7 +204,8 @@ gen_field() {
 # `podman cp` / `container cp`, then triggers a restart by touching
 # /tmp/tor-restart-flag. The flag-watcher subshell below picks it up
 # and pkills tor; the main loop sees tor exit, sees the flag is set,
-# reloads bridges if a refresh file is present, and respawns tor.
+# reloads bridges if a refresh file is present (ignored with bridges
+# off: tor respawns direct), and respawns tor.
 # haproxy + probe-primary keep running across the restart.
 #
 # Why graceful: a full container restart loses haproxy state (its
@@ -205,24 +226,32 @@ reload_bridges() {
     fi
 }
 
-# Spawn (or respawn) tor with the selected bridges (1..N). Caller must have
-# killed any previous TOR_PID first. Returns 0 on launch, 1 if no usable
-# bridge is available (refusing to launch is safer than bootstrapping on
-# garbage).
+# Spawn (or respawn) tor with the selected bridges (1..N), or direct with
+# bridges off. Caller must have killed any previous TOR_PID first. Returns 0
+# on launch, 1 if no usable bridge is available (refusing to launch is safer
+# than bootstrapping on garbage); with bridges off it always launches.
 launch_tor() {
-    reload_bridges
-    if ! load_and_validate; then
-        echo "tor-supervisor: REFUSING to launch tor on invalid/empty bridges" >&2
-        return 1
+    if [ "$BRIDGES_OFF" = 1 ]; then
+        # UseBridges 0 overrides torrc's UseBridges 1. With no Bridge line
+        # Tor does not start the obfs4 transport plugin.
+        set -- UseBridges 0
+        _how="direct (no bridges)"
+    else
+        reload_bridges
+        if ! load_and_validate; then
+            echo "tor-supervisor: REFUSING to launch tor on invalid/empty bridges" >&2
+            return 1
+        fi
+        # Build the "Bridge <line> Bridge <line> ..." argument list dynamically.
+        set --
+        _n=1
+        while [ "$_n" -le "$MAX_BRIDGE_SLOTS" ]; do
+            eval "_b=\${BRIDGE${_n}:-}"
+            [ -n "${_b:-}" ] && set -- "$@" Bridge "$_b"
+            _n=$((_n + 1))
+        done
+        _how="with $NBRIDGES bridge(s)"
     fi
-    # Build the "Bridge <line> Bridge <line> ..." argument list dynamically.
-    set --
-    _n=1
-    while [ "$_n" -le "$MAX_BRIDGE_SLOTS" ]; do
-        eval "_b=\${BRIDGE${_n}:-}"
-        [ -n "${_b:-}" ] && set -- "$@" Bridge "$_b"
-        _n=$((_n + 1))
-    done
     if [ -s "$TOR_LOG" ]; then mv -f "$TOR_LOG" "$TOR_LOG.prev"; fi
     : > "$TOR_LOG"   # a fresh log, so wait_for_tor_bootstrap reads this run only
     tor "$@" >"$TOR_LOG" 2>&1 &
@@ -230,12 +259,13 @@ launch_tor() {
     GENERATION=$((GENERATION + 1))
     write_kv "$GENERATION_FILE" "" "" "$GENERATION" "$TOR_PID"
     cut -d. -f1 "$SUSPEND_UPTIME" > "$TOR_SPAWN_UPTIME" 2>/dev/null || rm -f "$TOR_SPAWN_UPTIME"
-    echo "tor-supervisor: spawned tor pid=$TOR_PID generation=$GENERATION with $NBRIDGES bridge(s)"
+    echo "tor-supervisor: spawned tor pid=$TOR_PID generation=$GENERATION $_how"
 }
 
 # respawn_tor_acknowledged: a planned restart (the watcher stopped tor on a
 # request or the legacy flag): respawn tor and acknowledge. 0 respawned;
-# 1 refused (bad bridges; acknowledged as refused). Used by the supervisory
+# 1 refused (bad bridges; acknowledged as refused; never with bridges off,
+# where launch_tor always launches). Used by the supervisory
 # loop and by wait_for_tor_bootstrap, so the contract also holds while the
 # supervisor waits for a working stream.
 respawn_tor_acknowledged() {
@@ -351,9 +381,10 @@ wait_for_tor_bootstrap() {
 #     left alone: a clock step during its first bootstrap is no sleep, and a
 #     repeated step respawns at most once per SUSPEND_MIN_AGE;
 #   - it waits, up to 30 s, until one of tor's IPv4 bridges accepts a TCP
-#     connect (the network is back), then probes one stream to the exit
-#     resolver and one to the onion in parallel (6 s); a working one keeps
-#     tor (its circuits are warm);
+#     connect (the network is back; with bridges off there is no bridge to
+#     wait for), then probes one stream to the exit resolver and one to
+#     the onion in parallel (6 s); a working one keeps tor (its circuits
+#     are warm);
 #   - a restart requested meanwhile ends the check: the request's own respawn
 #     serves it;
 #   - otherwise tor is respawned as a planned restart, acknowledged as
@@ -383,20 +414,26 @@ suspend_check() {
     fi
     if [ -n "${TOR_SUSPEND_NET_PROBE:-}" ]; then
         _nps="$TOR_SUSPEND_NET_PROBE"
+    elif [ "$BRIDGES_OFF" = 1 ]; then
+        _nps=""   # tor runs direct: no bridge address to wait for
     else
         _tp=$(gen_field tor_pid || true)
         _nps=$(tr '\0' ' ' < "/proc/${_tp:-0}/cmdline" 2>/dev/null | grep -oE 'obfs4 [0-9]+[.][0-9]+[.][0-9]+[.][0-9]+:[0-9]+' | cut -d' ' -f2 || true)
     fi
-    echo "tor-supervisor: the host slept about $1 s; waiting for one of $(printf '%s\n' "$_nps" | grep -c .) bridge address(es)"
-    _i=0 _up=""
-    while [ -n "$_nps" ] && [ -z "$_up" ] && [ "$_i" -lt 30 ]; do
-        _restart_asked && { echo "tor-supervisor: a restart was asked during the check; it serves the sleep"; return 0; }
-        for _np in $_nps; do
-            if socat -u /dev/null "TCP4:$_np,connect-timeout=1" >/dev/null 2>&1; then _up=1; break; fi
+    if [ "$BRIDGES_OFF" = 1 ] && [ -z "$_nps" ]; then
+        echo "tor-supervisor: the host slept about $1 s; bridges off, probing streams"
+    else
+        echo "tor-supervisor: the host slept about $1 s; waiting for one of $(printf '%s\n' "$_nps" | grep -c .) bridge address(es)"
+        _i=0 _up=""
+        while [ -n "$_nps" ] && [ -z "$_up" ] && [ "$_i" -lt 30 ]; do
+            _restart_asked && { echo "tor-supervisor: a restart was asked during the check; it serves the sleep"; return 0; }
+            for _np in $_nps; do
+                if socat -u /dev/null "TCP4:$_np,connect-timeout=1" >/dev/null 2>&1; then _up=1; break; fi
+            done
+            [ -n "$_up" ] || { _i=$((_i + 1)); sleep 1; }
         done
-        [ -n "$_up" ] || { _i=$((_i + 1)); sleep 1; }
-    done
-    [ -n "$_up" ] || echo "tor-supervisor: no bridge answered within 30 s; probing streams anyway"
+        [ -n "$_up" ] || echo "tor-supervisor: no bridge answered within 30 s; probing streams anyway"
+    fi
     timeout 6 socat -u /dev/null "SOCKS4A:127.0.0.1:${STREAM_PROBE_EXIT},socksport=9050" >/dev/null 2>&1 &
     _pe=$!
     timeout 6 socat -u /dev/null "SOCKS4A:127.0.0.1:${STREAM_PROBE_ONION},socksport=9050" >/dev/null 2>&1 &
