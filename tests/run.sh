@@ -92,7 +92,7 @@ tail_log() { logs "$1" | tail -n 8 | sed 's/^/    | /'; }
 
 echo "building $IMG from $REPO"
 # LYREBIRD_VERSION (optional) overrides the Dockerfile's lyrebird pin, for
-# when Alpine edge has moved past it.
+# when Alpine v3.24/community has moved past it.
 build_args=()
 [ -z "${LYREBIRD_VERSION:-}" ] || build_args=(--build-arg "LYREBIRD_VERSION=$LYREBIRD_VERSION")
 if ! podman build -q "${build_args[@]}" -t "$IMG" "$REPO" >/dev/null; then

@@ -32,11 +32,15 @@ ENV APP_DIR="/$APP_USER"
 ENV DATA_DIR="$APP_DIR/data"
 ENV CONF_DIR="$APP_DIR/conf"
 
-# Edge-community release pin for lyrebird. Bump when alpine edge ships a new
-# `0.8.1-rN` revision — the package version is hard-pinned (`=`) on the apk
-# add line so `apk -U upgrade` will fail with `breaks: world[lyrebird=…]`
-# the moment edge moves ahead. Override at build time with
-# `--build-arg LYREBIRD_VERSION=…` to test a future bump without committing.
+# lyrebird release pin, from the stable v3.24/community repository that
+# matches the alpine base above (edge's riscv64 index lagged its other
+# arches, so an edge pin could not build all four platforms). Bump when
+# v3.24 ships a new `0.8.1-rN` revision, and move the repository with the
+# base image's minor version. The version is hard-pinned (`=`) on the apk
+# add line, so a moved repository fails the build with
+# `breaks: world[lyrebird=…]` instead of shipping an unpinned package.
+# Override at build time with `--build-arg LYREBIRD_VERSION=…` to test a
+# bump without committing.
 ARG LYREBIRD_VERSION=0.8.1-r7
 
 RUN apk add --no-cache ca-certificates
@@ -82,7 +86,7 @@ RUN apk -U --no-cache upgrade \
     && apk add --no-cache tor haproxy bind-tools tini socat \
     && apk add --no-cache --virtual .setcap-deps libcap \
     && apk add --no-cache "lyrebird=${LYREBIRD_VERSION}" \
-        --repository=https://dl-cdn.alpinelinux.org/alpine/edge/community/ \
+        --repository=https://dl-cdn.alpinelinux.org/alpine/v3.24/community/ \
     && setcap 'cap_net_bind_service=+ep' /usr/sbin/haproxy \
     && apk del .setcap-deps
 
