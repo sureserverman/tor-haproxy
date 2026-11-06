@@ -2,11 +2,11 @@ DataDirectory /app/data/tor
 UseBridges 1
 
 # Tor 0.4.8+ default Conflux + the default NumPrimaryGuards 3 are exactly
-# what we want: with the 3 bridges start.sh requires, every onion-service
+# what we want: with 3 bridges (or, with bridges off, the default 3 primary guards), every onion-service
 # circuit gets the 2-link-disjoint Conflux pair, halving cold-query latency
 # vs single-circuit. (Earlier images set ConfluxEnabled 0 / NumPrimaryGuards 2
 # to make 2-bridge configs survive — that workaround is gone now that the
-# image requires 3 bridges.)
+# image asks for 3 bridges when bridges are on.)
 
 # SOCKS proxy: explicit loopback bind; HAProxy connects here for SOCKS4 routing.
 SocksPort 127.0.0.1:9050

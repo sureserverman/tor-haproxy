@@ -7,8 +7,8 @@ set -eu
 # are visible in startup logs.
 umask 077
 
-# Bridges MUST be supplied by the operator at runtime (unless bridges are
-# off, see the bridges mode below) — no defaults are
+# Bridges MUST be supplied by the operator at runtime unless the bridges
+# mode below is off (Tor then runs direct) — no defaults are
 # baked into the image. The previous defaults leaked real obfs4 fingerprints
 # and certificates into every published image layer.
 #
@@ -16,8 +16,9 @@ umask 077
 # (≥3 distinct primary guards) on the onion-service traffic this image carries.
 # The operator may pass a *pool* of up to 16 candidates (BRIDGE1..BRIDGE16);
 # when the in-image evaluator (/bin/bridge-eval) is present it tests the pool
-# for real obfs4 usability and keeps the fastest-handshaking ones. At least one
-# usable bridge is required; fewer than 3 still runs but disables Conflux.
+# for real obfs4 usability and keeps the fastest-handshaking ones. With bridges
+# on, at least one usable bridge is required; fewer than 3 still runs but
+# disables Conflux.
 
 # obfs4 line shape: 'obfs4 host:port 40-hex-fingerprint cert=<base64> iat-mode=[012]'
 bridge_re='^obfs4 [^[:space:]]+ [0-9A-Fa-f]{40} cert=[^[:space:]]+ iat-mode=[012]$'
@@ -203,7 +204,8 @@ gen_field() {
 # `podman cp` / `container cp`, then triggers a restart by touching
 # /tmp/tor-restart-flag. The flag-watcher subshell below picks it up
 # and pkills tor; the main loop sees tor exit, sees the flag is set,
-# reloads bridges if a refresh file is present, and respawns tor.
+# reloads bridges if a refresh file is present (ignored with bridges
+# off: tor respawns direct), and respawns tor.
 # haproxy + probe-primary keep running across the restart.
 #
 # Why graceful: a full container restart loses haproxy state (its
