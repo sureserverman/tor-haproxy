@@ -71,6 +71,9 @@
 > `docker run -d --name=tor-haproxy -e BRIDGE1="obfs4 IP:PORT FINGERPRINT cert=... iat-mode=0" -e BRIDGE2="obfs4 IP:PORT FINGERPRINT cert=... iat-mode=0" --restart=always sureserver/tor-haproxy:latest`
 > with your desired bridges' strings in quotes
 >
+> To run Tor direct, without bridges, set `TOR_BRIDGES=off` (the default is `on`). The `BRIDGE1`..`BRIDGE16` and `BRIDGE_EVAL` settings are then ignored; any other value of `TOR_BRIDGES` makes the container refuse to start:\
+> `docker run -d --name=tor-haproxy -e TOR_BRIDGES=off --restart=always sureserver/tor-haproxy:latest`
+>
 > After that just use IP-address of your container and port 853 as DNS-over-TLS upstream resolver
 
 ### Podman

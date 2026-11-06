@@ -40,7 +40,8 @@ podman run -d --name=tor-haproxy -p 853:853 --restart=always sureserver/tor-hapr
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `BRIDGE1`..`BRIDGE16` | *(none; required)* | obfs4 bridge lines; at least one, three for Conflux |
+| `TOR_BRIDGES` | `on` | `on` runs Tor over the obfs4 bridges; `off` runs Tor direct (no bridges) and ignores `BRIDGE1`..`BRIDGE16` and `BRIDGE_EVAL`. Any other value refuses to start |
+| `BRIDGE1`..`BRIDGE16` | *(none; required unless `TOR_BRIDGES=off`)* | obfs4 bridge lines; at least one, three for Conflux |
 | `BRIDGE_EVAL` | `off` | In-container bridge evaluation: `off`, `auto`, `moat` or `force` |
 
 ## Custom bridges
